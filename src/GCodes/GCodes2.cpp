@@ -3769,6 +3769,22 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 				break;
 
 			// For cases 600 and 601, see 226
+		
+			case 610: // load screw map file
+#if HAS_MASS_STORAGE || HAS_SBC_INTERFACE
+				result = LoadScrewMap(gb, reply);
+#else
+				result = GCodeResult::errorNotSupported;
+#endif
+				break;
+
+			case 611: // set screw map file
+				result = SetScrewMap(gb, reply);
+				break;
+
+			case 612: // display screw map settings
+				result = PrintScrewMap(gb, reply);
+				break;
 
 			// M650 (set peel move parameters) and M651 (execute peel move) are no longer handled specially. Use macros to specify what they should do.
 

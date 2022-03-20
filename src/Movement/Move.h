@@ -16,6 +16,7 @@
 #include "BedProbing/RandomProbePointSet.h"
 #include "BedProbing/Grid.h"
 #include "Kinematics/Kinematics.h"
+#include "ScrewMap.h"
 #include <GCodes/RestorePoint.h>
 #include <Math/Deviation.h>
 
@@ -149,6 +150,7 @@ public:
 	const GridDefinition& GetGrid() const noexcept { return heightMap.GetGrid(); }			// Get the grid definition
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE
+	bool LoadScrewMapFromFile(FileStore *f, const StringRef& r);	
 	bool LoadHeightMapFromFile(FileStore *f, const char *fname, const StringRef& r) noexcept;	// Load the height map from a file returning true if an error occurred
 	bool SaveHeightMapToFile(FileStore *f, const char *fname) noexcept;						// Save the height map to a file returning true if an error occurred
 #endif
@@ -282,6 +284,8 @@ private:
 	bool compensateXY;
 
 	HeightMap heightMap;    							// The grid definition in use and height map for G29 bed probing
+	ScrewMap  screwMap;									// lead screw nonlinearity compensation
+
 	RandomProbePointSet probePoints;					// G30 bed probe points
 	float taperHeight;									// Height over which we taper
 	float recipTaperHeight;								// Reciprocal of the taper height

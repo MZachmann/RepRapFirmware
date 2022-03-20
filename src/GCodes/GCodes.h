@@ -303,6 +303,7 @@ public:
 	static constexpr const char* SLEEP_G = "sleep.g";
 	static constexpr const char* CONFIG_OVERRIDE_G = "config-override.g";
 	static constexpr const char* DefaultHeightMapFile = "heightmap.csv";
+	static constexpr const char* DefaultScrewMapFile = "screwmap.csv";
 	static constexpr const char* LOAD_FILAMENT_G = "load.g";
 	static constexpr const char* CONFIG_FILAMENT_G = "config.g";
 	static constexpr const char* UNLOAD_FILAMENT_G = "unload.g";
@@ -458,7 +459,11 @@ private:
 	GCodeResult LoadHeightMap(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);	// Load the height map from file
 	bool TrySaveHeightMap(const char *filename, const StringRef& reply) const noexcept;		// Save the height map to the specified file
 	GCodeResult SaveHeightMap(GCodeBuffer& gb, const StringRef& reply) const;				// Save the height map to the file specified by P parameter
+	GCodeResult LoadScrewMap(GCodeBuffer& gb, const StringRef& reply);			// Load the screw map from file
 #endif
+	GCodeResult SetScrewMap(GCodeBuffer& gb, const StringRef& reply);			// Set values for the screw map
+	GCodeResult PrintScrewMap(GCodeBuffer& gb, const StringRef& reply) const;	// Print the current screw map
+
 	void ClearBedMapping();																	// Stop using bed compensation
 	GCodeResult ProbeGrid(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);	// Start probing the grid, returning true if we didn't because of an error
 	ReadLockedPointer<ZProbe> SetZProbeNumber(GCodeBuffer& gb, char probeLetter) THROWS(GCodeException);		// Set up currentZProbeNumber and return the probe

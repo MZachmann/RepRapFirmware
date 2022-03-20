@@ -229,6 +229,8 @@ void Move::Init() noexcept
 	SetIdentityTransform();
 	compensateXY = true;
 	tanXY = tanYZ = tanXZ = 0.0;
+	screwMap.ClearAllMaps();
+
 
 	usingMesh = useTaper = false;
 	zShift = 0.0;
@@ -594,12 +596,14 @@ void Move::AxisAndBedTransform(float xyzPoint[MaxAxes], const Tool *tool, bool u
 	{
 		BedTransform(xyzPoint, tool);
 	}
+	AScrewMapTransform(xyzPoint, tool);
 }
 
 void Move::InverseAxisAndBedTransform(float xyzPoint[MaxAxes], const Tool *tool) const noexcept
 {
 	InverseBedTransform(xyzPoint, tool);
 	InverseAxisTransform(xyzPoint, tool);
+	AInverseScrewMapTransform(xyzPoint, tool);
 }
 
 // Do the Axis transform BEFORE the bed transform
@@ -749,6 +753,19 @@ void Move::SetIdentityTransform() noexcept
 }
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE
+
+bool Move::LoadScrewMapFromFile(FileStore *f, const StringRef& r)
+{
+	const bool ret = screwMap.LoadScrewMapFromFile(f, r);
+	if (ret)
+	{
+		r.Clear();
+	}
+	else
+	{
+	}
+	return ret;
+}
 
 // Load the height map from file, returning true if an error occurred with the error reason appended to the buffer
 bool Move::LoadHeightMapFromFile(FileStore *f, const char *fname, const StringRef& r) noexcept
