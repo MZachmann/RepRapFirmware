@@ -152,6 +152,7 @@ constexpr ObjectModelTableEntry Move::objectModelTable[] =
 	{ "liveGrid",				OBJECT_MODEL_FUNC_IF(self->usingMesh, (const GridDefinition *)&self->GetGrid()),				ObjectModelEntryFlags::none },
 	{ "meshDeviation",			OBJECT_MODEL_FUNC_IF(self->usingMesh, self, 7),													ObjectModelEntryFlags::none },
 	{ "probeGrid",				OBJECT_MODEL_FUNC_NOSELF((const GridDefinition *)&reprap.GetGCodes().GetDefaultGrid()),			ObjectModelEntryFlags::none },
+	{ "screwMap",				OBJECT_MODEL_FUNC(self->GetScrewMap().IsEnabled()),										ObjectModelEntryFlags::none },
 	{ "skew",					OBJECT_MODEL_FUNC(self, 8),																		ObjectModelEntryFlags::none },
 	{ "type",					OBJECT_MODEL_FUNC(self->GetCompensationTypeString()),											ObjectModelEntryFlags::none },
 
@@ -181,7 +182,7 @@ constexpr uint8_t Move::objectModelTableDescriptor[] =
 	3,
 	2,
 	2,
-	6 + (HAS_MASS_STORAGE || HAS_SBC_INTERFACE),
+	7 + (HAS_MASS_STORAGE || HAS_SBC_INTERFACE),
 	2,
 	4,
 #if SUPPORT_COORDINATE_ROTATION
@@ -479,6 +480,7 @@ void Move::Diagnostics(MessageType mtype) noexcept
 	Platform& p = reprap.GetPlatform();
 	p.MessageF(mtype, "=== Move ===\nDMs created %u, segments created %u, maxWait %" PRIu32 "ms, bed compensation in use: %s, comp offset %.3f\n",
 						DriveMovement::NumCreated(), MoveSegment::NumCreated(), longestGcodeWaitInterval, scratchString.c_str(), (double)zShift);
+	p.MessageF(mtype, "Screw Map: %s", GetScrewMap().GetEnabledString());						
 	longestGcodeWaitInterval = 0;
 
 #if 0	// debug only
@@ -594,10 +596,12 @@ void Move::AxisAndBedTransform(float xyzPoint[MaxAxes], const Tool *tool, bool u
 	{
 		BedTransform(xyzPoint, tool);
 	}
+	screwMap.ScrewMapTransform(xyzPoint);
 }
 
 void Move::InverseAxisAndBedTransform(float xyzPoint[MaxAxes], const Tool *tool) const noexcept
 {
+	screwMap.ScrewMapInverseTransform(xyzPoint);
 	InverseBedTransform(xyzPoint, tool);
 	InverseAxisTransform(xyzPoint, tool);
 }
