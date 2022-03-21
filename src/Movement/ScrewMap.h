@@ -21,7 +21,7 @@ struct ScrewMapInfo
 	inline bool IsEnabled() const 	{ return enable && (mapTable != nullptr); }			// is this maptable in use?
 	inline void SetEnabled(bool b) 	{ enable = b; }										// set manual enable bit
 	inline float End() const 		{ return start + increment * (count-1); }			// end coordinate (calculated)
-	inline int IndexOf(float coord) const { return (int)((coord - smi.start) / smi.increment);}		// index of coordinate (not clipped)
+	inline int IndexOf(float coord) const { return (int)((coord - start) / increment);}		// index of coordinate (not clipped)
  };
 
  class ScrewMap
@@ -30,8 +30,8 @@ struct ScrewMapInfo
 	ScrewMap();
 	void ClearAllMaps();	// delete any maps and disable mapping all axes
 	bool InitScrewMap(ScrewMapInfo&info, float start, float increment, int count);		// allocate a default table and enable the map
-	void Transform(float xyzPoint[MaxAxes], const Tool *tool);							// convert all axes
-	void InverseTransform(float xyzPoint[MaxAxes], const Tool *tool);					// unconvert all axes
+	void Transform(float xyzPoint[MaxAxes], const Tool *tool) const;							// convert all axes
+	void InverseTransform(float xyzPoint[MaxAxes], const Tool *tool) const;					// unconvert all axes
  	bool LoadFromFile(FileStore *f, const char* fname, const StringRef& r);				// load
  	bool SaveToFile(FileStore *f, const char* fname, const StringRef& r);				// save
 

@@ -1927,6 +1927,7 @@
 		<configuration configurationName="Duet3Mini5plus"/>
 		<configuration configurationName="DuetMaestro"/>
 		<configuration configurationName="Duet2_SBC"/>
+		<configuration configurationName="Duet3Mini4"/>
 		<configuration configurationName="Duet3_MB6XD">
 			<resource resourceType="PROJECT" workspacePath="/RepRapFirmware"/>
 		</configuration>

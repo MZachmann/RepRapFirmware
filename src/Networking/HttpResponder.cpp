@@ -677,6 +677,7 @@ bool HttpResponder::SendFileInfo(bool quitEarly) noexcept
 	{
 		// Got it - send the response now
 		outBuf->copy(	"HTTP/1.1 200 OK\r\n"
+						"Access-Control-Allow-Origin: *\r\n"
 						"Cache-Control: no-cache, no-store, must-revalidate\r\n"
 						"Pragma: no-cache\r\n"
 						"Expires: 0\r\n"
@@ -868,7 +869,8 @@ void HttpResponder::SendFile(const char *_ecv_array nameOfFileToSend, bool isWeb
 	// Don't cache files served by rr_download
 	if (!isWebFile)
 	{
-		outBuf->cat(	"Cache-Control: no-cache, no-store, must-revalidate\r\n"
+		outBuf->cat(	"Access-Control-Allow-Origin: *\r\n"
+						"Cache-Control: no-cache, no-store, must-revalidate\r\n"
 						"Pragma: no-cache\r\n"
 						"Expires: 0\r\n"
 					);
@@ -954,6 +956,7 @@ void HttpResponder::SendGCodeReply() noexcept
 
 		// Send the whole G-Code reply as plain text to the client
 		outBuf->copy(	"HTTP/1.1 200 OK\r\n"
+						"Access-Control-Allow-Origin: *\r\n"
 						"Cache-Control: no-cache, no-store, must-revalidate\r\n"
 						"Pragma: no-cache\r\n"
 						"Expires: 0\r\n"
@@ -1058,6 +1061,7 @@ void HttpResponder::SendJsonResponse(const char *_ecv_array command) noexcept
 	// buffer space remaining don't work.
 	// This response is currently about 230 bytes long in the worst case.
 	outBuf->copy(	"HTTP/1.1 200 OK\r\n"
+					"Access-Control-Allow-Origin: *\r\n"
 					"Cache-Control: no-cache, no-store, must-revalidate\r\n"
 					"Pragma: no-cache\r\n"
 					"Expires: 0\r\n"
@@ -1145,6 +1149,7 @@ void HttpResponder::ProcessRequest() noexcept
 		if (StringEqualsIgnoreCase(commandWords[0], "OPTIONS"))
 		{
 			outBuf->copy(	"HTTP/1.1 204 No Content\r\n"
+							"Access-Control-Allow-Origin: *\r\n"
 							"Allow: OPTIONS, GET, POST\r\n"
 							"Cache-Control: no-cache, no-store, must-revalidate\r\n"
 							"Pragma: no-cache\r\n"

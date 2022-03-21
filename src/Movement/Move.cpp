@@ -33,6 +33,7 @@
 
  */
 
+#include "ScrewMap.h"
 #include "Move.h"
 #include "StepTimer.h"
 #include <Platform/Platform.h>
@@ -596,14 +597,14 @@ void Move::AxisAndBedTransform(float xyzPoint[MaxAxes], const Tool *tool, bool u
 	{
 		BedTransform(xyzPoint, tool);
 	}
-	AScrewMapTransform(xyzPoint, tool);
+	screwMap.Transform(xyzPoint, tool);
 }
 
 void Move::InverseAxisAndBedTransform(float xyzPoint[MaxAxes], const Tool *tool) const noexcept
 {
 	InverseBedTransform(xyzPoint, tool);
 	InverseAxisTransform(xyzPoint, tool);
-	AInverseScrewMapTransform(xyzPoint, tool);
+	screwMap.InverseTransform(xyzPoint, tool);
 }
 
 // Do the Axis transform BEFORE the bed transform
@@ -754,9 +755,9 @@ void Move::SetIdentityTransform() noexcept
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE
 
-bool Move::LoadScrewMapFromFile(FileStore *f, const StringRef& r)
+bool Move::LoadScrewMapFromFile(FileStore *f, const char *fname, const StringRef& r)
 {
-	const bool ret = screwMap.LoadScrewMapFromFile(f, r);
+	const bool ret = screwMap.LoadFromFile(f, fname, r);
 	if (ret)
 	{
 		r.Clear();

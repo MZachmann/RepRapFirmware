@@ -157,7 +157,7 @@ void ScrewMap::TransformAxis(float coords[MaxAxes], int axis) const
 }
 
 // inverse transform this coord, where axis is actual X, Y, or Z
-float ScrewMap::InverseTransformAxis(float coords[MaxAxes], int axis) const
+void ScrewMap::InverseTransformAxis(float coords[MaxAxes], int axis) const
 {
 	const ScrewMapInfo& smi = screwInfos[axis];
 	if (smi.IsEnabled())
@@ -167,7 +167,7 @@ float ScrewMap::InverseTransformAxis(float coords[MaxAxes], int axis) const
 }
 
 // convert all axes
-void ScrewMap::Transform(float xyzPoint[MaxAxes], const Tool *tool)
+void ScrewMap::Transform(float xyzPoint[MaxAxes], const Tool *tool) const
 {
 	for (size_t i = 0; i < MaxAxes; i++)
 	{
@@ -176,7 +176,7 @@ void ScrewMap::Transform(float xyzPoint[MaxAxes], const Tool *tool)
 }
 
 // unconvert all axes
-void ScrewMap::InverseTransform(float xyzPoint[MaxAxes], const Tool *tool)
+void ScrewMap::InverseTransform(float xyzPoint[MaxAxes], const Tool *tool) const
 {
 	// inverse goes backwards in the axes to be a true inverse
 	for (size_t i = MaxAxes-1; i >= 0; i--)

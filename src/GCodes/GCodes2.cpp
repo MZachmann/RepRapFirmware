@@ -3770,7 +3770,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 
 			// For cases 600 and 601, see 226
 		
-			case 610: // load screw map file
+			case 640: // load screw map file
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE
 				result = LoadScrewMap(gb, reply);
 #else
@@ -3778,11 +3778,11 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 #endif
 				break;
 
-			case 611: // set screw map file
+			case 641: // set screw map file
 				result = SetScrewMap(gb, reply);
 				break;
 
-			case 612: // display screw map settings
+			case 642: // display screw map settings
 				result = PrintScrewMap(gb, reply);
 				break;
 

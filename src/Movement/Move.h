@@ -150,7 +150,7 @@ public:
 	const GridDefinition& GetGrid() const noexcept { return heightMap.GetGrid(); }			// Get the grid definition
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE
-	bool LoadScrewMapFromFile(FileStore *f, const StringRef& r);	
+	bool LoadScrewMapFromFile(FileStore *f, const char *fname, const StringRef& r);	
 	bool LoadHeightMapFromFile(FileStore *f, const char *fname, const StringRef& r) noexcept;	// Load the height map from a file returning true if an error occurred
 	bool SaveHeightMapToFile(FileStore *f, const char *fname) noexcept;						// Save the height map to a file returning true if an error occurred
 #endif
