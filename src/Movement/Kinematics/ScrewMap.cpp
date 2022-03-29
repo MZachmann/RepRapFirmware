@@ -9,14 +9,25 @@
 #include "../Move.h"
 #include "GCodes/GCodeBuffer/GCodeBuffer.h"
 
-/* Screw Mapping is a well-known adjustment mechanism for screw nonlinearities in axes
-   Unlike 'real' screw mapping, this allows one axis to independently affect multiple axes for physical correction
-   The usedAxes property is the list of axes that get adjusted for each specific input axis
-   This must therefore be set after the drives and axes are all defined
-   
-   MapTable is an array of values, one row per adjusted axis, with delta values in each entry
-     MapTable[axis][] == {0,0...} is no changes
-     MapTable[X][] = {-1,-1,...} would shift all positions to the left one unit
+/* Screw Mapping is a well-known software repair mechanism for screw nonlinearities in axes
+    In the common case it does a piecewise-linear remap of the screw's coordinate axis
+
+	This code, instead, allows one axis to independently affect multiple axes
+	which allows correction for other physical defects - in my case not-totally-straight rails
+	The usedAxes property is the list of axes that get adjusted for each specific input axis
+	All the device motors and axes must be defined before the scremap is specified
+
+	MapTable is an array of values, one row per adjusted axis, with delta values in each entry
+	When the table is created you define Start, Increment, and Count for the independent variable
+	As well as a string listing which axes are transformed
+
+	The transformation uses deltas instead of absolute values
+	  a) if origins change you need only change the start value of the map
+	  b) the numeric dynamic range can be very small
+
+	Examples:
+     MapTable[axis][] == {0, 0, ...} is no changes
+     MapTable[X][] = {-1 } would shift all positions to the left one unit
 
 	Transform algorithm -> 
 		for each visible axis
@@ -30,27 +41,36 @@
 	Inverse Transform Algorithm
 		the reverse algorithm finds the (float) index by walking through the adjustment table
 		but then linearly interpolates to return the original values to floating point accuracy
+		it caches the last-transformed-value from the Transform algorithm and in practice reprap, at least,
+		almost never inverts anything else so this is infinitely fast
 
 	This uses 4 M-codes. 
 
-	-- Enable/disable all screw mapping. Does not clear tables.
-	-- if no S prints report
-	M640 S[0|1]
+    M640
+		-- Enable/disable all screw mapping. Does not clear tables.
+		M640 S[0|1]
+		-- if no S prints report
+		M640
 
-	-- create a screw table for srcaxis with one row per destaxis
-	-- if no count prints report
-	M641 R"srcaxis" A"destaxes" Sstart Iinterval Ncount
+    M641
+		-- create a screw table for srcaxis with one row per destaxis
+		M641 R"srcaxis" A"destaxes" Sstart Iinterval Ncount
+		-- if no count argument prints report of all table metadata
+		M641
 
-	-- set table entries (may be called multiple times for shorter gcode lines)
-	-- offset value lets a subset of the table be set
-	-- if no data prints contents of table
-	M642 R"srcaxis" [Ooffset] Xf0:f1:f2:f3... Yf0:f1:f2...
+    M642
+		-- set table entries (may be called multiple times for shorter gcode lines)
+		-- offset value lets a subset of the table be set
+		M642 R"srcaxis" [Ooffset] Xf0:f1:f2:f3... Yf0:f1:f2...
+		-- if no data prints contents of table
+		M642 R"srcaxis"
 
-	-- selftest (for debugging)
-	[M643]
+    M643
+		-- selftest (for debugging), no arguments, not usually compiled - see TESTING_SCREW_MAP
+		M643
 */
 
-// set this to zero to not include the selftest code, though M810 is still mapped in gcodes
+// set this to zero to not include the selftest code, though M643 is still mapped in gcodes2.cpp
 #define TESTING_SCREW_MAP 0
 
 static float* FindTableRow(const ScrewMapInfo& smi, unsigned int findAxis) noexcept;
