@@ -1,11 +1,15 @@
 # Changes in the Fork - the Screwmap_Z Branch
-This adds code to perform multi-axis screwmapping.
-This is a piecewise-linear transformation of the input coordinates to repair physical errors in software
-In particular, this repairs, in software, errors due to:
+This adds code to perform multi-axis screwmapping. 
+
+Four M-codes are added to let the user define piecewise-linear transformations of the input coordinates to repair physical errors.
+
+The following errors can be repaired in software:
  1) Non-linearities in a ballscrew or leadscrew drive
  2) Linear rails which are not straight and flat
  3) Linear rails which are not parallel
  4) A bed which is tilted or bowed or twisted or ...
+ 5) A rack and pinion where the rack is not linear
+
 Documentation is in src/Movement/Kinematics/Screwmap.h
 #
 # Original Readme
