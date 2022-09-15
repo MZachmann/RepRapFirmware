@@ -752,7 +752,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 					}
 					else
 					{
-						dir.copy(platform.GetGCodeDir());
+						dir.copy(Platform::GetGCodeDir());
 					}
 
 					if (sparam == 2)
@@ -1085,7 +1085,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 				{
 					String<MaxFilenameLength> filename;
 					gb.GetUnprecedentedString(filename.GetRef());
-					const bool ok = gb.OpenFileToWrite(platform.GetGCodeDir(), filename.c_str(), 0, false, 0);
+					const bool ok = gb.OpenFileToWrite(Platform::GetGCodeDir(), filename.c_str(), 0, false, 0);
 					if (ok)
 					{
 						reply.printf("Writing to file: %s", filename.c_str());
@@ -1106,7 +1106,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 				{
 					String<MaxFilenameLength> filename;
 					gb.GetUnprecedentedString(filename.GetRef());
-					result = (platform.Delete(platform.GetGCodeDir(), filename.c_str())) ? GCodeResult::ok : GCodeResult::warning;
+					result = (platform.Delete(Platform::GetGCodeDir(), filename.c_str())) ? GCodeResult::ok : GCodeResult::warning;
 				}
 				break;
 #endif
@@ -1268,14 +1268,14 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 							break;
 
 						case MassStorage::InfoResult::ok:
-							reply.printf("SD card in slot %" PRIu32 ": capacity %.2fGb, partition size %.2fGb, free space %.2fGb, speed %.2fMBytes/sec, cluster size %" PRIu32 "%s",
+							reply.printf("SD card in slot %" PRIu32 ": capacity %.2fGB, partition size %.2fGB, free space %.2fGB, speed %.2fMBytes/sec, cluster size %" PRIu32 "%s",
 											slot,
 											(double)((float)returnedInfo.cardCapacity * 1e-9),
 											(double)((float)returnedInfo.partitionSize * 1e-9),
 											(double)((float)returnedInfo.freeSpace * 1e-9),
 											(double)((float)returnedInfo.speed * 1e-6),
 											(returnedInfo.clSize < 1024) ? returnedInfo.clSize : returnedInfo.clSize/1024,
-											(returnedInfo.clSize < 1024) ? " bytes" : "kb"
+											(returnedInfo.clSize < 1024) ? " bytes" : "kB"
 										);
 							break;
 						}
@@ -1912,7 +1912,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 				break;
 
 			case 121:
-				Pop(gb);
+				Pop(gb, true);
 				break;
 
 			case 122:
@@ -2511,7 +2511,9 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 							SetMoveBufferDefaults();
 							moveState.feedRate = ConvertSpeedFromMmPerMin(DefaultFeedRate);
 							moveState.tool = reprap.GetCurrentTool();
-							NewMoveAvailable(1);
+							moveState.linearAxesMentioned = axesMentioned.Intersects(reprap.GetPlatform().GetLinearAxes());
+							moveState.rotationalAxesMentioned = axesMentioned.Intersects(reprap.GetPlatform().GetRotationalAxes());
+							NewSingleSegmentMoveAvailable();
 						}
 					}
 					else
@@ -2533,19 +2535,13 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 
 					bool dummy = false;
 					String<MaxMessageLength> title;
-					gb.TryGetQuotedString('R', title.GetRef(), dummy);
+					(void)gb.TryGetQuotedString('R', title.GetRef(), dummy);
 
-					int32_t sParam = 1;
-					gb.TryGetIValue('S', sParam, dummy);
-					if (sParam < 0 || sParam > 3)
-					{
-						reply.copy("Invalid message box mode");
-						result = GCodeResult::error;
-						break;
-					}
+					uint32_t sParam = 1;
+					(void)gb.TryGetLimitedUIValue('S', sParam, dummy, 4);
 
 					float tParam;
-					if (sParam == 0 || sParam == 1)
+					if (sParam <= 1)
 					{
 						tParam = DefaultMessageTimeout;
 						gb.TryGetFValue('T', tParam, dummy);
@@ -2572,7 +2568,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 					}
 
 					// Don't lock the movement system, because if we do then only the channel that issues the M291 can move the axes
-					if (sParam == 2 || sParam == 3)
+					if (sParam >= 2)
 					{
 #if HAS_SBC_INTERFACE
 						if (reprap.UsingSbcInterface())
@@ -2675,7 +2671,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 				break;
 
 			case 305: // Set/report specific heater parameters
-				reply.copy("M305 has been replaced by M308 and M950 in RepRapFirmware 3");
+				reply.copy("M305 has been replaced by M308 and M950");
 				result = GCodeResult::error;
 				break;
 
@@ -3303,7 +3299,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 					String<MaxFilenameLength> defaultFolder;
 					if (code == 560)
 					{
-						defaultFolder.copy(platform.GetWebDir());
+						defaultFolder.copy(Platform::GetWebDir());
 					}
 					else
 					{
@@ -3966,22 +3962,26 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 				break;
 
 			case 673: // Align plane on rotary axis
-				if (numTotalAxes < U_AXIS)
+				if (numTotalAxes <= U_AXIS)
 				{
 					reply.copy("Insufficient axes configured");
 					result = GCodeResult::error;
 				}
-				else if (LockMovementAndWaitForStandstill(gb))
+				else if (!LockMovementAndWaitForStandstill(gb))
+				{
+					result = GCodeResult::notFinished;
+				}
+				else if (!AllAxesAreHomed())
+				{
+					reply.copy("Home the axes first");
+					result = GCodeResult::error;
+				}
+				else
 				{
 					Move& move = reprap.GetMove();
 					if (move.GetNumProbedProbePoints() < 2)
 					{
 						reply.copy("Insufficient probe points");
-						result = GCodeResult::error;
-					}
-					else if (!AllAxesAreHomed())
-					{
-						reply.copy("Home the axes first");
 						result = GCodeResult::error;
 					}
 					else
@@ -4008,11 +4008,18 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 						SetMoveBufferDefaults();
 						if (axisToUse != 0)
 						{
+							if (!reprap.GetPlatform().IsAxisRotational(axisToUse))
+							{
+								reply.printf("%c axis is not rotary", axisLetters[axisToUse]);
+								result = GCodeResult::error;
+								break;
+							}
+
 							// An axis letter is given, so try to level the given axis
 							const float correctionAngle = atanf((z2 - z1) / (a2 - a1)) * 180.0 / M_PI;
 							const float correctionFactor = gb.Seen('S') ? gb.GetFValue() : 1.0;
 							moveState.coords[axisToUse] += correctionAngle * correctionFactor;
-
+							moveState.rotationalAxesMentioned = true;
 							reply.printf("%c axis is off by %.2f deg", axisLetters[axisToUse], (double)correctionAngle);
 							HandleReply(gb, GCodeResult::notFinished, reply.c_str());
 						}
@@ -4031,6 +4038,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 									((z4 - z3) * (a2 - a1) - (z2 - z1) * (a4 - a3));
 							moveState.coords[(x1 == x2) ? Y_AXIS : X_AXIS] += aS;
 							moveState.coords[Z_AXIS] += zS;
+							moveState.linearAxesMentioned = true;
 
 							reply.printf("%c is offset by %.2fmm, Z is offset by %.2fmm", (x2 == x1) ? 'Y' : 'X', (double)aS, (double)zS);
 							HandleReply(gb, GCodeResult::notFinished, reply.c_str());
@@ -4050,14 +4058,10 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 						moveState.feedRate = gb.LatestMachineState().feedRate;
 						moveState.usingStandardFeedrate = true;
 						moveState.tool = reprap.GetCurrentTool();
-						NewMoveAvailable(1);
+						NewSingleSegmentMoveAvailable();
 
 						gb.SetState(GCodeState::waitingForSpecialMoveToComplete);
 					}
-				}
-				else
-				{
-					result = GCodeResult::notFinished;
 				}
 				break;
 
@@ -4299,7 +4303,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 
 			case 906: // Set/report Motor currents
 			case 913: // Set/report motor current percent
-#if HAS_SMART_DRIVERS
+#if HAS_SMART_DRIVERS || SUPPORT_CAN_EXPANSION
 			case 917: // Set/report standstill motor current percentage
 #endif
 				{
@@ -4360,7 +4364,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 					else
 					{
 						reply.copy(	(code == 913) ? "Motor current % of normal - "
-#if HAS_SMART_DRIVERS
+#if HAS_SMART_DRIVERS || SUPPORT_CAN_EXPANSION
 									: (code == 917) ? "Motor standstill current % of normal - "
 #endif
 											: "Motor current (mA) - "
@@ -4474,7 +4478,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 				break;
 #endif
 
-#if HAS_STALL_DETECT
+#if HAS_STALL_DETECT || SUPPORT_CAN_EXPANSION
 			case 915:
 				result = platform.ConfigureStallDetection(gb, reply, outBuf);
 				break;
@@ -4549,7 +4553,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 			case 954:	// configure as expansion board
 				{
 					CanAddress addr = gb.GetLimitedUIValue('A', 1, CanId::MaxCanAddress + 1);
-					CanInterface::SwitchToExpansionMode(addr);
+					CanInterface::SwitchToExpansionMode(addr, false);
 				}
 				break;
 #endif

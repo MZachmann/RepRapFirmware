@@ -433,7 +433,7 @@ void StringParser::CheckForMixedSpacesAndTabs() noexcept
 	if (seenMetaCommand && !warnedAboutMixedSpacesAndTabs && seenLeadingSpace && seenLeadingTab)
 	{
 		reprap.GetPlatform().MessageF(AddWarning(gb.GetResponseMessageType()),
-								"both space and tab characters used to indent blocks by line %" PRIu32, gb.GetLineNumber());
+								"both space and tab characters used to indent blocks at/before line %" PRIu32 "\n", gb.GetLineNumber());
 		warnedAboutMixedSpacesAndTabs = true;
 	}
 }
@@ -1053,6 +1053,11 @@ void StringParser::PutCommand(const char *str) noexcept
 		c = *str++;
 		Put(c);
 	} while (c != 0);
+}
+
+void StringParser::ResetIndentation() noexcept
+{
+	indentToSkipTo = (gb.GetBlockIndent() > 0) ? gb.GetBlockIndent() : NoIndentSkip;
 }
 
 void StringParser::SetFinished() noexcept
@@ -1924,7 +1929,7 @@ void StringParser::AddParameters(VariableSet& vs, int codeRunning) noexcept
 										catch (const GCodeException&)
 										{
 											//TODO can we report the error anywhere?
-											ev.Set(nullptr);
+											ev.SetNull(nullptr);
 										}
 										char paramName[2] = { letter, 0 };
 										vs.InsertNewParameter(paramName, ev);

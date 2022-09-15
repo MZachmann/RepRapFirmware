@@ -154,11 +154,12 @@ constexpr size_t StringLength256 = 256;
 
 constexpr size_t MaxHeaterNameLength = StringLength20;	// Maximum number of characters in a heater name
 constexpr size_t MaxFanNameLength = StringLength20;		// Maximum number of characters in a fan name
-constexpr size_t FormatStringLength = StringLength256;
 #ifdef DUET3_ATE
 constexpr size_t GCodeReplyLength = StringLength500;	// Maximum number of characters in a GCode reply that doesn't use an OutputBuffer (ATE codes can generate long replies)
+constexpr size_t FormatStringLength = StringLength500;	// GCode replies are processed by Platform::MessageF which uses an intermediate buffer of this length
 #else
 constexpr size_t GCodeReplyLength = StringLength256;	// Maximum number of characters in a GCode reply that doesn't use an OutputBuffer
+constexpr size_t FormatStringLength = StringLength256;
 #endif
 constexpr size_t MachineNameLength = StringLength50;
 constexpr size_t RepRapPasswordLength = StringLength20;
@@ -187,12 +188,8 @@ constexpr size_t OUTPUT_BUFFER_COUNT = 40;				// How many OutputBuffer instances
 constexpr size_t RESERVED_OUTPUT_BUFFERS = 4;			// Number of reserved output buffers after long responses, enough to hold a status response
 #elif SAM4E || SAM4S
 constexpr size_t OUTPUT_BUFFER_SIZE = 256;				// How many bytes does each OutputBuffer hold?
-constexpr size_t OUTPUT_BUFFER_COUNT = 24;				// How many OutputBuffer instances do we have?
+constexpr size_t OUTPUT_BUFFER_COUNT = 26;				// How many OutputBuffer instances do we have?
 constexpr size_t RESERVED_OUTPUT_BUFFERS = 4;			// Number of reserved output buffers after long responses, enough to hold a status response
-#elif SAM3XA
-constexpr size_t OUTPUT_BUFFER_SIZE = 256;				// How many bytes does each OutputBuffer hold?
-constexpr size_t OUTPUT_BUFFER_COUNT = 16;				// How many OutputBuffer instances do we have?
-constexpr size_t RESERVED_OUTPUT_BUFFERS = 2;			// Number of reserved output buffers after long responses
 #elif __LPC17xx__
 constexpr uint16_t OUTPUT_BUFFER_SIZE = 256;            // How many bytes does each OutputBuffer hold?
 constexpr size_t OUTPUT_BUFFER_COUNT = 16;              // How many OutputBuffer instances do we have?
@@ -221,7 +218,7 @@ constexpr unsigned int MaxFilaments = 8;
 
 // Move system
 constexpr float DefaultFeedRate = 3000.0;				// The initial requested feed rate after resetting the printer, in mm/min
-constexpr float DefaultG0FeedRate = 18000.0;			// The initial feed rate for G0 commands after resetting the printer, in mm/min
+constexpr float MaximumG0FeedRate = 60000.0;			// The maximum feed rate for G0 commands in mm/min, if the M203 settings permit
 constexpr float MinRetractSpeed = 60.0;					// The minimum firmware retraction/un-retraction speed in mm/min
 constexpr float DefaultRetractSpeed = 1000.0;			// The default firmware retraction and un-retraction speed, in mm/min
 constexpr float DefaultRetractLength = 2.0;

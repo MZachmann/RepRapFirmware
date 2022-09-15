@@ -315,7 +315,7 @@ void PrintMonitor::StartingPrint(const char* filename) noexcept
 {
 #if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
 	WriteLocker locker(printMonitorLock);
-	MassStorage::CombineName(filenameBeingPrinted.GetRef(), platform.GetGCodeDir(), filename);
+	MassStorage::CombineName(filenameBeingPrinted.GetRef(), Platform::GetGCodeDir(), filename);
 # if HAS_SBC_INTERFACE
 	if (!reprap.UsingSbcInterface())
 # endif
@@ -393,7 +393,7 @@ float PrintMonitor::EstimateTimeLeft(PrintEstimationMethod method) const noexcep
 	ReadLocker locker(printMonitorLock);
 
 	// We can't provide an estimation if we don't have any information about the file
-	if (!printingFileParsed)
+	if (!printingFileParsed || !isPrinting)
 	{
 		return 0.0;
 	}

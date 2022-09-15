@@ -53,7 +53,7 @@ static Task<MainTaskStackWords> mainTask;
 extern "C" [[noreturn]] void MainTask(void * pvParameters) noexcept;
 
 // Idle task data
-constexpr unsigned int IdleTaskStackWords = 50;				// currently we don't use the idle talk for anything, so this can be quite small
+constexpr unsigned int IdleTaskStackWords = 50;				// currently we don't use the idle task for anything, so this can be quite small
 static Task<IdleTaskStackWords> idleTask;
 
 extern "C" void vApplicationGetIdleTaskMemory(StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, uint32_t *pulIdleTaskStackSize) noexcept
@@ -103,13 +103,14 @@ extern "C" void ReleaseMallocMutex() noexcept
 // We don't want to use a static buffer because that is wasteful of RAM, given that only the crash handler uses it, we have interrupts disabled while we use it,
 // and we reset immediately afterwards.
 // Instead we use either the bottom or top of the main task stack.
-// Parameter 'stk' is the stack we are interested in, which we must not overwrite. The caller is either using the same stack a little lower, or the exception stack.
-void *Tasks::GetNVMBuffer(const uint32_t *stk) noexcept
+// Parameter 'stk' is the stack we are interested in, which we must not overwrite; or null.
+// If it is not null then the caller is either using the same stack a little lower, or the exception stack.
+void *Tasks::GetNVMBuffer(const uint32_t *_ecv_array null stk) noexcept
 {
 	constexpr size_t stackAllowance = 128;
 	static_assert((sizeof(NonVolatileMemory) & 3) == 0);
 	static_assert(MainTaskStackWords * 4 >= 2 * sizeof(NonVolatileMemory) + stackAllowance + 4);
-	const char * const cStack = reinterpret_cast<const char*>(stk);
+	const char * const cStack = reinterpret_cast<const char*>((stk == nullptr) ? GetStackPointer() : stk);
 
 	// See if we can use the bottom of the main task stack
 	char *ret = (char *)&mainTask + sizeof(TaskBase);
@@ -128,7 +129,7 @@ void *Tasks::GetNVMBuffer(const uint32_t *stk) noexcept
 [[noreturn]] void AppMain() noexcept
 {
 	pinMode(DiagPin, (DiagOnPolarity) ? OUTPUT_LOW : OUTPUT_HIGH);			// set up status LED for debugging and turn it off
-#ifdef DUET3MINI
+#if defined(DUET3MINI) || defined(DUET3_MB6XD)
 	pinMode(ActLedPin, (ActOnPolarity) ? OUTPUT_LOW : OUTPUT_HIGH);			// set up activity LED and turn it off
 #endif
 

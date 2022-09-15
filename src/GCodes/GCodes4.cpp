@@ -331,6 +331,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 		toolChangeRestorePoint.toolNumber = reprap.GetCurrentToolNumber();
 		toolChangeRestorePoint.fanSpeed = lastDefaultFanSpeed;
 		reprap.SetPreviousToolNumber();
+		reprap.StateUpdated();							// tell DWC/DSF that a restore point, nextToolNumber and the previousToolNumber have been updated
 		gb.AdvanceState();
 
 		// If the tool is in the firmware-retracted state, there may be some Z hop applied, which we must remove
@@ -486,7 +487,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 			}
 			SetMoveBufferDefaults();
 			ToolOffsetTransform(moveState.currentUserPosition, moveState.coords);
-			moveState.feedRate = ConvertSpeedFromMmPerMin(DefaultFeedRate);	// ask for a good feed rate, we may have paused during a slow move
+			moveState.feedRate = ConvertSpeedFromMmPerMin(DefaultFeedRate);		// ask for a good feed rate, we may have paused during a slow move
 			moveState.tool = reprap.GetCurrentTool();							// needed so that bed compensation is applied correctly
 			if (gb.GetState() == GCodeState::resuming1 && currentZ > pauseRestorePoint.moveCoords[Z_AXIS])
 			{
@@ -499,7 +500,8 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 				// Just move to the saved position in one go
 				gb.SetState(GCodeState::resuming3);
 			}
-			NewMoveAvailable(1);
+			moveState.linearAxesMentioned = moveState.rotationalAxesMentioned = true;	// assume that both linear and rotational axes might be moving
+			NewSingleSegmentMoveAvailable();
 		}
 		break;
 
@@ -586,20 +588,22 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 		break;
 
 	case GCodeState::flashing2:
+#if HAS_MASS_STORAGE
 		if (firmwareUpdateModuleMap.IsBitSet(0))
 		{
 			// Update main firmware
 			firmwareUpdateModuleMap.Clear();
-			String<MaxFilenameLength> filenameString;
 			try
 			{
+				String<MaxFilenameLength> filenameString;
 				bool dummy;
 				gb.TryGetQuotedString('P', filenameString.GetRef(), dummy);
-				reprap.UpdateFirmware(filenameString.GetRef());
+				reprap.UpdateFirmware(IAP_UPDATE_FILE, filenameString.c_str());
 				// The above call does not return unless an error occurred
 			}
 			catch (const GCodeException&) { }
 		}
+#endif
 		isFlashing = false;
 		gb.SetState(GCodeState::normal);
 		break;
@@ -641,7 +645,8 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 					moveState.coords[axis1Num] = axesCoords[axis1Num];
 					moveState.coords[Z_AXIS] = zp->GetStartingHeight();
 					moveState.feedRate = zp->GetTravelSpeed();
-					NewMoveAvailable(1);
+					moveState.linearAxesMentioned = moveState.rotationalAxesMentioned = true;		// assume that both linear and rotational axes might be moving
+					NewSingleSegmentMoveAvailable();
 
 					InitialiseTaps(false);
 					gb.AdvanceState();
@@ -721,7 +726,8 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 					moveState.reduceAcceleration = true;
 					moveState.coords[Z_AXIS] = -zp->GetDiveHeight() + zp->GetActualTriggerHeight();
 					moveState.feedRate = zp->GetProbingSpeed(tapsDone);
-					NewMoveAvailable(1);
+					moveState.linearAxesMentioned = true;		// assume that both linear and rotational axes might be moving
+					NewSingleSegmentMoveAvailable();
 					gb.AdvanceState();
 				}
 			}
@@ -772,7 +778,8 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 			moveState.coords[Z_AXIS] = zp->GetStartingHeight();
 			moveState.feedRate = zp->GetTravelSpeed();
 		}
-		NewMoveAvailable(1);
+		moveState.linearAxesMentioned = true;
+		NewSingleSegmentMoveAvailable();
 		gb.AdvanceState();
 		break;
 
@@ -912,7 +919,8 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 			moveState.coords[Z_AXIS] = zp->GetStartingHeight();
 			moveState.feedRate = zp->GetTravelSpeed();
 		}
-		NewMoveAvailable(1);
+		moveState.linearAxesMentioned = true;
+		NewSingleSegmentMoveAvailable();
 		gb.AdvanceState();
 		break;
 
@@ -926,7 +934,8 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 			const auto zp = platform.GetZProbeOrDefault(currentZProbeNumber);
 			moveState.coords[Z_AXIS] = zp->GetStartingHeight();
 			moveState.feedRate = zp->GetTravelSpeed();
-			NewMoveAvailable(1);
+			moveState.linearAxesMentioned = moveState.rotationalAxesMentioned = true;		// assume that both linear and rotational axes might be moving
+			NewSingleSegmentMoveAvailable();
 
 			InitialiseTaps(false);
 			gb.AdvanceState();
@@ -1005,7 +1014,8 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 												? platform.AxisMinimum(Z_AXIS) - zp->GetDiveHeight() + zp->GetActualTriggerHeight()	// Z axis has been homed, so no point in going very far
 												: -1.1 * platform.AxisTotalLength(Z_AXIS);	// Z axis not homed yet, so treat this as a homing move
 					moveState.feedRate = zp->GetProbingSpeed(tapsDone);
-					NewMoveAvailable(1);
+					moveState.linearAxesMentioned = true;
+					NewSingleSegmentMoveAvailable();
 					gb.AdvanceState();
 				}
 			}
@@ -1099,7 +1109,8 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 			moveState.coords[Z_AXIS] = zp->GetStartingHeight();
 			moveState.feedRate = zp->GetTravelSpeed();
 		}
-		NewMoveAvailable(1);
+		moveState.linearAxesMentioned = true;
+		NewSingleSegmentMoveAvailable();
 		gb.AdvanceState();
 		break;
 
@@ -1294,7 +1305,8 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 						moveState.reduceAcceleration = true;
 						straightProbeSettings.SetCoordsToTarget(moveState.coords);
 						moveState.feedRate = zp->GetProbingSpeed(0);
-						NewMoveAvailable(1);
+						moveState.linearAxesMentioned = moveState.rotationalAxesMentioned = true;
+						NewSingleSegmentMoveAvailable();
 						gb.AdvanceState();
 					}
 				}
@@ -1340,7 +1352,8 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 				moveState.filePos = (&gb == fileGCode) ? gb.GetFilePosition() : noFilePosition;
 				moveState.canPauseAfter = false;			// don't pause after a retraction because that could cause too much retraction
 				moveState.currentZHop = tool->GetRetractHop();
-				NewMoveAvailable(1);
+				moveState.linearAxesMentioned = true;
+				NewSingleSegmentMoveAvailable();
 			}
 			gb.SetState(GCodeState::normal);
 		}
@@ -1363,7 +1376,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 				moveState.feedRate = tool->GetUnRetractSpeed() * tool->DriveCount();
 				moveState.filePos = (&gb == fileGCode) ? gb.GetFilePosition() : noFilePosition;
 				moveState.canPauseAfter = true;
-				NewMoveAvailable(1);
+				NewSingleSegmentMoveAvailable();
 			}
 			gb.SetState(GCodeState::normal);
 		}
@@ -1421,13 +1434,13 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 				const uint32_t ms = millis() - timingStartMillis;
 				const float fileMbytes = (float)timingBytesWritten/(float)(1024 * 1024);
 				const float mbPerSec = (fileMbytes * 1000.0)/(float)ms;
-				platform.MessageF(gb.GetResponseMessageType(), "SD write speed for %.1fMbyte file was %.2fMbytes/sec\n", (double)fileMbytes, (double)mbPerSec);
+				platform.MessageF(gb.GetResponseMessageType(), "SD write speed for %.1fMByte file was %.2fMBytes/sec\n", (double)fileMbytes, (double)mbPerSec);
 				sdTimingFile->Close();
 
-				sdTimingFile = platform.OpenFile(platform.GetGCodeDir(), TimingFileName, OpenMode::read);
+				sdTimingFile = platform.OpenFile(Platform::GetGCodeDir(), TimingFileName, OpenMode::read);
 				if (sdTimingFile == nullptr)
 				{
-					platform.Delete(platform.GetGCodeDir(), TimingFileName);
+					platform.Delete(Platform::GetGCodeDir(), TimingFileName);
 					gb.LatestMachineState().SetError("Failed to re-open timing file");
 					gb.SetState(GCodeState::normal);
 					break;
@@ -1444,7 +1457,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 			if (!sdTimingFile->Write(reply.c_str(), bytesToWrite))
 			{
 				sdTimingFile->Close();
-				platform.Delete(platform.GetGCodeDir(), TimingFileName);
+				platform.Delete(Platform::GetGCodeDir(), TimingFileName);
 				gb.LatestMachineState().SetError("Failed to write to timing file");
 				gb.SetState(GCodeState::normal);
 				break;
@@ -1463,8 +1476,8 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 				const float fileMbytes = (float)timingBytesWritten/(float)(1024 * 1024);
 				const float mbPerSec = (fileMbytes * 1000.0)/(float)ms;
 				sdTimingFile->Close();
-				reply.printf("SD read speed for %.1fMbyte file was %.2fMbytes/sec", (double)fileMbytes, (double)mbPerSec);
-				platform.Delete(platform.GetGCodeDir(), TimingFileName);
+				reply.printf("SD read speed for %.1fMByte file was %.2fMBytes/sec", (double)fileMbytes, (double)mbPerSec);
+				platform.Delete(Platform::GetGCodeDir(), TimingFileName);
 				gb.SetState(GCodeState::normal);
 				break;
 			}
@@ -1473,7 +1486,7 @@ void GCodes::RunStateMachine(GCodeBuffer& gb, const StringRef& reply) noexcept
 			if (sdTimingFile->Read(reply.Pointer(), bytesToRead) != (int)bytesToRead)
 			{
 				sdTimingFile->Close();
-				platform.Delete(platform.GetGCodeDir(), TimingFileName);
+				platform.Delete(Platform::GetGCodeDir(), TimingFileName);
 				gb.LatestMachineState().SetError("Failed to read from timing file");
 				gb.SetState(GCodeState::normal);
 				break;

@@ -11,15 +11,19 @@
 
 #define IAP_UPDATE_FILE			"Duet3_SDiap32_" BOARD_SHORT_NAME ".bin"
 #define IAP_UPDATE_FILE_SBC		"Duet3_SBCiap32_" BOARD_SHORT_NAME ".bin"
+#define IAP_CAN_LOADER_FILE		"Duet3_CANiap32_" BOARD_SHORT_NAME ".bin"
 constexpr uint32_t IAP_IMAGE_START = 0x20458000;		// last 32kb of RAM
 
 // Features definition
+// Networking support
 #define HAS_LWIP_NETWORKING		1
 #define HAS_WIFI_NETWORKING		0
-#define HAS_SBC_INTERFACE		1
 
+// Storage support
+#define HAS_SBC_INTERFACE		1
 #define HAS_MASS_STORAGE		1
 #define HAS_HIGH_SPEED_SD		1
+
 #define HAS_CPU_TEMP_SENSOR		1
 
 #define SUPPORT_TMC51xx			0
@@ -44,6 +48,7 @@ constexpr uint32_t IAP_IMAGE_START = 0x20458000;		// last 32kb of RAM
 #define SUPPORT_OBJECT_MODEL	1
 #define SUPPORT_FTP				1
 #define SUPPORT_TELNET			1
+#define SUPPORT_MULTICAST_DISCOVERY	1
 #define SUPPORT_ASYNC_MOVES		1
 #define ALLOCATE_DEFAULT_PORTS	0
 #define TRACK_OBJECT_NAMES		1
@@ -98,7 +103,8 @@ constexpr Pin UsbVBusPin = PortCPin(21);			// Pin used to monitor VBUS on USB po
 // Drivers
 constexpr Pin STEP_PINS[NumDirectDrivers] =			{ PortCPin(18), PortCPin(16), PortCPin(28), PortCPin(01), PortCPin(4),  PortCPin(9)  };
 constexpr Pin DIRECTION_PINS[NumDirectDrivers] =	{ PortBPin(5),  PortDPin(10), PortAPin(4),  PortAPin(22), PortCPin(3),  PortDPin(14) };
-constexpr Pin ENABLE_PINS[NumDirectDrivers] =		{ PortBPin(4),  PortAPin(21), PortAPin(9),  PortAPin(23), PortAPin(2),  PortDPin(17) };
+constexpr Pin ENABLE_PINS_v01[NumDirectDrivers] =	{ PortBPin(4),  PortAPin(21), PortAPin(9),  PortAPin(23), PortAPin(2),  PortDPin(17) };
+constexpr Pin ENABLE_PINS_v100[NumDirectDrivers] =	{ PortBPin(4),  PortAPin(21), PortCPin(20), PortAPin(23), PortAPin(2),  PortDPin(17) };
 constexpr Pin DRIVER_ERR_PINS[NumDirectDrivers] =	{ PortDPin(29), PortCPin(17), PortDPin(13), PortCPin(02), PortDPin(31), PortCPin(10) };
 constexpr Pin StepGatePin = PortDPin(22);
 constexpr GpioPinFunction StepGatePinFunction = GpioPinFunction::C;			// TIOB11
@@ -106,6 +112,8 @@ constexpr GpioPinFunction StepGatePinFunction = GpioPinFunction::C;			// TIOB11
 #define STEP_GATE_TC		(TC3)					// TC11 is really TC3 channel 2
 #define STEP_GATE_TC_ID		(ID_TC11)				// ID for peripheral clock and interrupt
 #define STEP_GATE_TC_CHAN	(2)
+
+constexpr uint32_t DefaultStandstillCurrentPercent = 71;					// needed to support expansion boards
 
 // Thermistor/PT1000 inputs
 constexpr Pin TEMP_SENSE_PINS[NumThermistorInputs] = { PortCPin(15), PortCPin(29), PortCPin(0), PortCPin(31) };	// Thermistor/PT1000 pins
@@ -131,6 +139,7 @@ constexpr float V12MonitorVoltageRange = (60.4 + 4.7)/4.7 * 3.3;			// voltage di
 constexpr Pin DiagPin = PortBPin(6);										// diag/status LED
 constexpr Pin ActLedPin = PortBPin(7);										// activityLED
 constexpr bool DiagOnPolarity = false;
+constexpr bool ActOnPolarity = false;
 
 // SD cards
 constexpr size_t NumSdCards = 2;
@@ -243,7 +252,7 @@ constexpr PinDescription PinTable[] =
 	// Port C
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::adc1_9,	PinCapability::ainr,	"temp2"					},	// PC00 thermistor 2
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PC01 driver 3 step
-	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PC02 driver 3 err
+	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"driver3.err"			},	// PC02 driver 3 err
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PC03 driver 4 dir
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PC04 driver 4 step
 	{ TcOutput::tioa6,	PwmOutput::none,	AdcInput::none,		PinCapability::wpwm,	"out4"					},	// PC05 OUT4
@@ -251,14 +260,14 @@ constexpr PinDescription PinTable[] =
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"out3.tach"				},	// PC07 OUT3_TACH
 	{ TcOutput::tioa7,	PwmOutput::none,	AdcInput::none,		PinCapability::wpwm,	"out7"					},	// PC08 OUT7
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PC09 driver 5 step
-	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PC10 driver 5 err
+	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"driver5.err"			},	// PC10 driver 5 err
 	{ TcOutput::tioa8,	PwmOutput::none,	AdcInput::none,		PinCapability::wpwm,	"out6"					},	// PC11 OUT6
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PC12 CAN1_RX
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::adc1_1,	PinCapability::none,	nullptr					},	// PC13 VssaSensePin
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PC14 NC
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::adc1_2,	PinCapability::ainr,	"temp0"					},	// PC15 thermistor 0
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PC16 driver 1 step
-	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PC17 driver 1 err
+	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"driver1.err"			},	// PC17 driver 1 err
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PC18 driver 0 step
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PC19 ETH_LED_Y
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PC20 unused
@@ -288,12 +297,12 @@ constexpr PinDescription PinTable[] =
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PD10 driver 1 dir
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PD11 EthernetPhyReset
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PD12 CAN1_TX
-	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PD13 driver 2 err
+	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"driver2.err"			},	// PD13 driver 2 err
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PD14 driver 5 dir
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"io1.in,serial1.rx"		},	// PD15 IO1_IN and Serial1 RX
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::rw,		"io1.out,serial1.tx"	},	// PD16 IO1_OUT and Serial1 TX
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PD17 driver 5 enable
-	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PD18 External SD card detect
+	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"ate.sd1.cd"			},	// PD18 External SD card detect
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PD19 SPI CS0 (external SD card)
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::rw,		"spi.cs3"				},	// PD20 SPI CS3
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::rw,		"io5.out,!io5.out.iso"	},	// PD21 IO5_OUT (not PWM capable on TIOA11 because TIOB11 is used to generate step pulses)
@@ -304,9 +313,9 @@ constexpr PinDescription PinTable[] =
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::rw,		"io0.out,serial0.tx"	},	// PD26 IO0_OUT Serial0 TX
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::rw,		"io2.out,i2c0.dat"		},	// PD27 IO2_OUT
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"io2.in,i2c0.clk"		},	// PD28 IO2_IN
-	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PD29 driver 0 err
+	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"driver0.err"			},	// PD29 driver 0 err
 	{ TcOutput::none,	PwmOutput::none,	AdcInput::adc0_0,	PinCapability::ainr,	"io4.in"				},	// PD30 IO4_IN
-	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::none,	nullptr					},	// PD31 driver 4 err
+	{ TcOutput::none,	PwmOutput::none,	AdcInput::none,		PinCapability::read,	"driver4.err"			},	// PD31 driver 4 err
 
 	// Port E
 	{ TcOutput::tioa9,	PwmOutput::none,	AdcInput::none,		PinCapability::rwpwm,	"io4.out"				},	// PE00 IO4_OUT

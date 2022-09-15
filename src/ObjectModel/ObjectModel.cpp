@@ -193,6 +193,34 @@ void ExpressionValue::Release() noexcept
 	}
 }
 
+void ExpressionValue::SetBool(bool b) noexcept
+{
+	Release();
+	type = (uint32_t)TypeCode::Bool;
+	bVal = b;
+}
+
+void ExpressionValue::SetInt(int32_t i) noexcept
+{
+	Release();
+	type = (uint32_t)TypeCode::Int32;
+	iVal = i;
+}
+
+void ExpressionValue::SetFloat(float f, uint32_t digits) noexcept { Release(); type = (uint32_t)TypeCode::Float; fVal = f; param = digits; }
+
+void ExpressionValue::SetDriverId(DriverId did) noexcept
+{
+	Release();
+	type = (uint32_t)TypeCode::DriverId_tc;
+#if SUPPORT_CAN_EXPANSION
+	param = did.boardAddress;
+#else
+	param = 0;
+#endif
+	uVal = did.localDriver;
+}
+
 #if SUPPORT_CAN_EXPANSION
 
 // Given that this is a CanExpansionBoardDetails value, extract the part requested according to the parameter and append it to the string
@@ -230,7 +258,7 @@ void ExpressionValue::ExtractRequestedPart(const StringRef& rslt) const noexcept
 		case ExpansionDetail::firmwareFileName:
 			rslt.cat("Duet3Firmware_");
 			rslt.catn(sVal, indexOfDivider1);
-			rslt.cat(".bin");
+			rslt.cat((strncmp(sVal, "Mini5plus", indexOfDivider1) == 0) ? ".uf2" : ".bin");
 			break;
 
 		case ExpansionDetail::firmwareDate:
@@ -1042,29 +1070,40 @@ decrease(strlen(idString))	// recursion variant
 
 	case TypeCode::Bitmap16:
 	case TypeCode::Bitmap32:
-		if (context.WantArrayLength())
 		{
-			if (*idString != 0)
+			const int numSetBits = Bitmap<uint32_t>::MakeFromRaw(val.uVal).CountSetBits();
+			if (context.WantArrayLength())
 			{
-				break;
+				if (*idString != 0)
+				{
+					break;
+				}
+				return ExpressionValue((int32_t)numSetBits);
 			}
-			const auto bm = Bitmap<uint32_t>::MakeFromRaw(val.uVal);
-			return ExpressionValue((int32_t)bm.CountSetBits());
+
+			if (*idString == '^')
+			{
+				++idString;
+				if (*idString != 0)
+				{
+					break;
+				}
+				context.AddIndex();
+				const bool inBounds = (context.GetLastIndex() >= 0 && context.GetLastIndex() < numSetBits);
+				if (context.WantExists())
+				{
+					return ExpressionValue(inBounds);
+				}
+
+				if (!inBounds)
+				{
+					throw context.ConstructParseException("array index out of bounds");
+				}
+
+				return ExpressionValue((int32_t)(Bitmap<uint32_t>::MakeFromRaw(val.uVal).GetSetBitNumber(context.GetLastIndex())));
+			}
 		}
-		if (*idString == '^')
-		{
-			++idString;
-			if (*idString != 0)
-			{
-				break;
-			}
-			if (context.WantExists())
-			{
-				return ExpressionValue(true);
-			}
-			const auto bm = Bitmap<uint32_t>::MakeFromRaw(val.uVal);
-			return ExpressionValue((int32_t)bm.GetSetBitNumber(context.GetLastIndex()));
-		}
+
 		if (*idString != 0)
 		{
 			break;
@@ -1076,29 +1115,40 @@ decrease(strlen(idString))	// recursion variant
 		return ExpressionValue((int32_t)val.uVal);
 
 	case TypeCode::Bitmap64:
-		if (context.WantArrayLength())
 		{
-			if (*idString != 0)
+			const int numSetBits = Bitmap<uint64_t>::MakeFromRaw(val.Get56BitValue()).CountSetBits();
+			if (context.WantArrayLength())
 			{
-				break;
+				if (*idString != 0)
+				{
+					break;
+				}
+				return ExpressionValue((int32_t)numSetBits);
 			}
-			const auto bm = Bitmap<uint64_t>::MakeFromRaw(val.Get56BitValue());
-			return ExpressionValue((int32_t)bm.CountSetBits());
+
+			if (*idString == '^')
+			{
+				++idString;
+				if (*idString != 0)
+				{
+					break;
+				}
+				context.AddIndex();
+				const bool inBounds = (context.GetLastIndex() >= 0 && context.GetLastIndex() < numSetBits);
+				if (context.WantExists())
+				{
+					return ExpressionValue(inBounds);
+				}
+
+				if (!inBounds)
+				{
+					throw context.ConstructParseException("array index out of bounds");
+				}
+
+				return ExpressionValue((int32_t)(Bitmap<uint64_t>::MakeFromRaw(val.Get56BitValue()).GetSetBitNumber(context.GetLastIndex())));
+			}
 		}
-		if (*idString == '^')
-		{
-			++idString;
-			if (*idString != 0)
-			{
-				break;
-			}
-			if (context.WantExists())
-			{
-				return ExpressionValue(true);
-			}
-			const auto bm = Bitmap<uint64_t>::MakeFromRaw(val.Get56BitValue());
-			return ExpressionValue((int32_t)bm.GetSetBitNumber(context.GetLastIndex()));
-		}
+
 		if (*idString != 0)
 		{
 			break;

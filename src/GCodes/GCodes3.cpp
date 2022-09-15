@@ -56,6 +56,7 @@ GCodeResult GCodes::SavePosition(GCodeBuffer& gb, const StringRef& reply) THROWS
 	bool dummySeen;
 	gb.TryGetLimitedUIValue('S', sParam, dummySeen, NumRestorePoints);
 	SavePosition(numberedRestorePoints[sParam], gb);
+	reprap.StateUpdated();										// tell DWC/DSF that a restore point has been changed
 	return GCodeResult::ok;
 }
 
@@ -997,7 +998,9 @@ bool GCodes::SetupM585ProbingMove(GCodeBuffer& gb) noexcept
 	moveState.checkEndstops = true;
 	moveState.canPauseAfter = false;
 	zProbeTriggered = false;
-	NewMoveAvailable(1);
+	moveState.linearAxesMentioned = reprap.GetPlatform().IsAxisLinear(m585Settings.axisNumber);
+	moveState.rotationalAxesMentioned = reprap.GetPlatform().IsAxisRotational(m585Settings.axisNumber);
+	NewSingleSegmentMoveAvailable();
 	return true;
 }
 
@@ -1052,7 +1055,9 @@ bool GCodes::SetupM675ProbingMove(GCodeBuffer& gb, bool towardsMin) noexcept
 	moveState.checkEndstops = true;
 	moveState.canPauseAfter = false;
 	zProbeTriggered = false;
-	NewMoveAvailable(1);						// kick off the move
+	moveState.linearAxesMentioned = reprap.GetPlatform().IsAxisLinear(m675Settings.axisNumber);
+	moveState.rotationalAxesMentioned = reprap.GetPlatform().IsAxisRotational(m675Settings.axisNumber);
+	NewSingleSegmentMoveAvailable();						// kick off the move
 	return true;
 }
 
@@ -1063,7 +1068,9 @@ void GCodes::SetupM675BackoffMove(GCodeBuffer& gb, float position) noexcept
 	moveState.coords[m675Settings.axisNumber] = position;
 	moveState.feedRate = m675Settings.feedRate;
 	moveState.canPauseAfter = false;
-	NewMoveAvailable(1);
+	moveState.linearAxesMentioned = reprap.GetPlatform().IsAxisLinear(m675Settings.axisNumber);
+	moveState.rotationalAxesMentioned = reprap.GetPlatform().IsAxisRotational(m675Settings.axisNumber);
+	NewSingleSegmentMoveAvailable();
 }
 
 // Deal with a M905
@@ -1158,7 +1165,7 @@ GCodeResult GCodes::UpdateFirmware(GCodeBuffer& gb, const StringRef &reply)
 	reprap.GetHeat().SwitchOffAll(true);				// turn all heaters off because the main loop may get suspended
 	DisableDrives();									// all motors off
 
-	if (firmwareUpdateModuleMap.IsEmpty())					// have we worked out which modules to update?
+	if (firmwareUpdateModuleMap.IsEmpty())				// have we worked out which modules to update?
 	{
 		// Find out which modules we have been asked to update
 		if (gb.Seen('S'))
@@ -1181,7 +1188,7 @@ GCodeResult GCodes::UpdateFirmware(GCodeBuffer& gb, const StringRef &reply)
 		}
 		else
 		{
-			firmwareUpdateModuleMap.SetBit(0);		// no modules specified, so update module 0 to match old behaviour
+			firmwareUpdateModuleMap.SetBit(0);			// no modules specified, so update module 0 to match old behaviour
 		}
 
 		if (firmwareUpdateModuleMap.IsEmpty())
@@ -1913,11 +1920,12 @@ void GCodes::ProcessEvent(GCodeBuffer& gb) noexcept
 	// Get the event message
 	String<StringLength100> eventText;
 	const MessageType mt = Event::GetTextDescription(eventText.GetRef());
-	platform.MessageF(mt, "%s\n", eventText.c_str());					// tell the user about the event and log it
 
 	// Get the name of the macro file that we should look for
 	String<StringLength50> macroName;
 	Event::GetMacroFileName(macroName.GetRef());
+
+#if HAS_MASS_STORAGE || HAS_SBC_INTERFACE || HAS_EMBEDDED_FILES
 	if (platform.SysFileExists(macroName.c_str()))
 	{
 		// Set up the macro parameters
@@ -1932,17 +1940,21 @@ void GCodes::ProcessEvent(GCodeBuffer& gb) noexcept
 			return;
 		}
 	}
+#endif
 
 	// We didn't execute the macro, so do the default action
 	if (Event::GetDefaultPauseReason() == PrintPausedReason::dontPause)
 	{
+		platform.MessageF(mt, "%s\n", eventText.c_str());				// record the event on the console and log it
 		Event::FinishedProcessing();									// nothing more to do
 	}
 	else
 	{
 		// It's a serious event that causes the print to pause by default, so send an alert
-		String<StringLength100> eventText;
-		Event::GetTextDescription(eventText.GetRef());
+		if ((mt & LogLevelMask) != 0)
+		{
+			platform.MessageF((MessageType)(mt & (LogLevelMask | ErrorMessageFlag | WarningMessageFlag)), "%s\n", eventText.c_str());	// log the event
+		}
 		const bool isPrinting = IsReallyPrinting();
 		platform.SendAlert(GenericMessage, eventText.c_str(), (isPrinting) ? "Printing paused" : "Event notification", 1, 0.0, AxesBitmap());
 		if (IsReallyPrinting())

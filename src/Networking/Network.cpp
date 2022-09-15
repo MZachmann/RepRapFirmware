@@ -21,29 +21,32 @@
 #include "NetworkInterface.h"
 
 #if HAS_LWIP_NETWORKING
-#include "LwipEthernet/LwipEthernetInterface.h"
+# include "LwipEthernet/LwipEthernetInterface.h"
 #endif
 
 #if HAS_W5500_NETWORKING
-#include "W5500Ethernet/W5500Interface.h"
+# include "W5500Ethernet/W5500Interface.h"
 #endif
 
 #if HAS_WIFI_NETWORKING
-#include "ESP8266WiFi/WiFiInterface.h"
+# include "ESP8266WiFi/WiFiInterface.h"
 #endif
 
 #if HAS_RTOSPLUSTCP_NETWORKING
-#include "RTOSPlusTCPEthernet/RTOSPlusTCPEthernetInterface.h"
+# include "RTOSPlusTCPEthernet/RTOSPlusTCPEthernetInterface.h"
 #endif
 
 #if SUPPORT_HTTP
-#include "HttpResponder.h"
+# include "HttpResponder.h"
 #endif
 #if SUPPORT_FTP
-#include "FtpResponder.h"
+# include "FtpResponder.h"
 #endif
 #if SUPPORT_TELNET
-#include "TelnetResponder.h"
+# include "TelnetResponder.h"
+#endif
+#if SUPPORT_MULTICAST_DISCOVERY
+# include "MulticastDiscovery/MulticastResponder.h"
 #endif
 
 #ifdef __LPC17xx__
@@ -87,7 +90,7 @@ Network::Network(Platform& p) noexcept : platform(p)
 	interfaces[0] = new LwipEthernetInterface(p);
 #elif defined(DUET_NG) || defined(DUET3MINI_V04)
 	interfaces[0] = nullptr;			// we set this up in Init()
-#elif defined(DUET3MINI4)
+#elif defined(FMDC_V02) || defined(FMDC_V03)
 	interfaces[0] = new WiFiInterface(p);
 #elif defined(DUET_M)
 	interfaces[0] = new W5500Interface(p);
@@ -247,6 +250,11 @@ GCodeResult Network::DisableProtocol(unsigned int interface, NetworkProtocol pro
 #if SUPPORT_TELNET
 			case TelnetProtocol:
 				TelnetResponder::Disable();
+				break;
+#endif
+
+#if SUPPORT_MULTICAST_DISCOVERY
+			case MulticastDiscoveryProtocol:
 				break;
 #endif
 
@@ -435,6 +443,10 @@ void Network::Activate() noexcept
 	}
 # endif
 
+#if SUPPORT_MULTICAST_DISCOVERY
+	MulticastResponder::Init();
+#endif
+
 	// Finally, create the network task
 	networkTask.Create(NetworkLoop, "NETWORK", nullptr, TaskPriority::SpinPriority);
 #endif
@@ -519,6 +531,9 @@ void Network::Spin() noexcept
 			if (nr == nullptr)
 			{
 				nr = responders;		// 'responders' can't be null at this point
+#if SUPPORT_MULTICAST_DISCOVERY
+				MulticastResponder::Spin();
+#endif
 			}
 			doneSomething = nr->Spin();
 			nr = nr->GetNext();
@@ -540,7 +555,12 @@ void Network::Spin() noexcept
 		{
 			slowLoop = dt;
 		}
-		RTOSIface::Yield();
+
+		if (!doneSomething)
+		{
+			TaskBase::SetCurrentTaskPriority(TaskPriority::SpinPriority);		// restore normal priority
+			RTOSIface::Yield();
+		}
 	}
 }
 #endif
@@ -571,6 +591,10 @@ void Network::Diagnostics(MessageType mtype) noexcept
 	{
 		iface->Diagnostics(mtype);
 	}
+#endif
+
+#if SUPPORT_MULTICAST_DISCOVERY
+	MulticastResponder::Diagnostics(mtype);
 #endif
 }
 
@@ -605,6 +629,33 @@ IPAddress Network::GetIPAddress(unsigned int interface) const noexcept
 			(interface < NumNetworkInterfaces) ? interfaces[interface]->GetIPAddress() :
 #endif
 					IPAddress();
+}
+
+IPAddress Network::GetNetmask(unsigned int interface) const noexcept
+{
+	return
+#if HAS_NETWORKING
+			(interface < NumNetworkInterfaces) ? interfaces[interface]->GetNetmask() :
+#endif
+					IPAddress();
+}
+
+IPAddress Network::GetGateway(unsigned int interface) const noexcept
+{
+	return
+#if HAS_NETWORKING
+			(interface < NumNetworkInterfaces) ? interfaces[interface]->GetGateway() :
+#endif
+					IPAddress();
+}
+
+bool Network::UsingDhcp(unsigned int interface) const noexcept
+{
+#if HAS_NETWORKING
+	return interface < NumNetworkInterfaces && interfaces[interface]->UsingDhcp();
+#else
+	return false;
+#endif
 }
 
 void Network::SetHostname(const char *name) noexcept

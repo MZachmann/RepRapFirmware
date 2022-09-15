@@ -93,10 +93,9 @@ constexpr SSPChannel ESP_SPI = SSP0;
 # include "matrix/matrix.h"
 #endif
 
-const uint32_t WiFiResponseTimeoutMillis = 200;					// SPI timeout when when the ESP does not have to write to flash memory
-const uint32_t WiFiTransferTimeoutMillis = 60;					// Christian measured this at 29 to 31ms when the ESP has to write to flash memory
+const uint32_t WiFiResponseTimeoutMillis = 500;					// Timeout includes time-intensive flash-access operations; highest measured is 234 ms.
 const uint32_t WiFiWaitReadyMillis = 100;
-const uint32_t WiFiStartupMillis = 300;
+const uint32_t WiFiStartupMillis = 8000;
 const uint32_t WiFiStableMillis = 100;
 
 const unsigned int MaxHttpConnections = 4;
@@ -474,8 +473,9 @@ void WiFiInterface::Activate() noexcept
 
 		bufferOut = new MessageBufferOut;
 		bufferIn = new MessageBufferIn;
+#if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
 		uploader = new WifiFirmwareUploader(SERIAL_WIFI_DEVICE, *this);
-
+#endif
 		if (requestedMode != WiFiState::disabled)
 		{
 			Start();
@@ -576,6 +576,8 @@ void WiFiInterface::Start() noexcept
 	transferAlreadyPendingCount = readyTimeoutCount = responseTimeoutCount = 0;
 
 	lastTickMillis = millis();
+	lastDataReadyPinState = 0;
+	risingEdges = 0;
 	SetState(NetworkState::starting1);
 }
 
@@ -612,12 +614,30 @@ void WiFiInterface::Spin() noexcept
 	{
 	case NetworkState::starting1:
 		{
+			const bool currentDataReadyPinState = digitalRead(EspDataReadyPin);
+			if (currentDataReadyPinState != lastDataReadyPinState)
+			{
+				if (currentDataReadyPinState && risingEdges < 10)
+				{
+					risingEdges++;
+				}
+				lastDataReadyPinState = currentDataReadyPinState;
+			}
+
 			// The ESP toggles CS before it has finished starting up, so don't look at the CS signal too soon
 			const uint32_t now = millis();
-			if (now - lastTickMillis >= WiFiStartupMillis)
+			if (risingEdges >= 2) // the first rising edge is the one coming out of reset
 			{
 				lastTickMillis = now;
 				SetState(NetworkState::starting2);
+			}
+			else
+			{
+				if (now - lastTickMillis >= WiFiStartupMillis) // time wait expired
+				{
+					platform.Message(NetworkInfoMessage, "WiFi module disabled - start timed out\n");
+					SetState(NetworkState::disabled);
+				}
 			}
 		}
 		break;
@@ -646,9 +666,20 @@ void WiFiInterface::Spin() noexcept
 						rc = SendCommand(NetworkCommand::networkSetHostName, 0, 0, 0, reprap.GetNetwork().GetHostname(), HostNameLength, nullptr, 0);
 						if (rc != ResponseEmpty)
 						{
-							reprap.GetPlatform().MessageF(NetworkInfoMessage, "Error: Could not set WiFi hostname: %s\n", TranslateWiFiResponse(rc));
+							reprap.GetPlatform().MessageF(NetworkErrorMessage, "failed to set WiFi hostname: %s\n", TranslateWiFiResponse(rc));
 						}
-
+#if SAME5x
+						// If running the RTOS-based WiFi module code, tell the module to increase SPI clock speed to 40MHz.
+						// This is safe on SAME5x processors but not on SAM4 processors.
+						if (isdigit(wiFiServerVersion[0]) && wiFiServerVersion[0] >= '2')
+						{
+							rc = SendCommand(NetworkCommand::networkSetClockControl, 0, 0, 0x2001, nullptr, 0, nullptr, 0);
+							if (rc != ResponseEmpty)
+							{
+								reprap.GetPlatform().MessageF(NetworkErrorMessage, "failed to set WiFi SPI speed: %s\n", TranslateWiFiResponse(rc));
+							}
+						}
+#endif
 						SetState(NetworkState::active);
 						espStatusChanged = true;				// make sure we fetch the current state and enable the ESP interrupt
 					}
@@ -656,7 +687,7 @@ void WiFiInterface::Spin() noexcept
 					{
 						// Something went wrong, maybe a bad firmware image was flashed
 						// Disable the WiFi chip again in this case
-						platform.MessageF(NetworkInfoMessage, "Error: Failed to initialise WiFi module: %s\n", TranslateWiFiResponse(rc));
+						platform.MessageF(NetworkErrorMessage, "failed to initialise WiFi module: %s\n", TranslateWiFiResponse(rc));
 						Stop();
 					}
 				}
@@ -669,10 +700,12 @@ void WiFiInterface::Spin() noexcept
 		break;
 
 	case NetworkState::disabled:
+#if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
 		if (uploader != nullptr)
 		{
 			uploader->Spin();
 		}
+#endif
 		break;
 
 	case NetworkState::active:
@@ -713,7 +746,7 @@ void WiFiInterface::Spin() noexcept
 			else
 			{
 				Stop();
-				platform.MessageF(NetworkInfoMessage, "Failed to change WiFi mode: %s\n", TranslateWiFiResponse(rslt));
+				platform.MessageF(NetworkErrorMessage, "failed to change WiFi mode: %s\n", TranslateWiFiResponse(rslt));
 			}
 		}
 		else if (currentMode == WiFiState::connected || currentMode == WiFiState::runningAsAccessPoint)
@@ -866,7 +899,7 @@ const char* WiFiInterface::TranslateEspResetReason(uint32_t reason) noexcept
 
 void WiFiInterface::Diagnostics(MessageType mtype) noexcept
 {
-	platform.MessageF(mtype, "- WiFi -\nNetwork state is %s\n", GetStateName());
+	platform.MessageF(mtype, "= WiFi =\nNetwork state is %s\n", GetStateName());
 	platform.MessageF(mtype, "WiFi module is %s\n", TranslateWiFiState(currentMode));
 	platform.MessageF(mtype, "Failed messages: pending %u, notready %u, noresp %u\n", transferAlreadyPendingCount, readyTimeoutCount, responseTimeoutCount);
 
@@ -1015,6 +1048,7 @@ void WiFiInterface::EspRequestsTransfer() noexcept
 void WiFiInterface::SetIPAddress(IPAddress p_ip, IPAddress p_netmask, IPAddress p_gateway) noexcept
 {
 	ipAddress = p_ip;
+	usingDhcp = ipAddress.IsNull();
 	netmask = p_netmask;
 	gateway = p_gateway;
 }
@@ -1787,7 +1821,7 @@ int32_t WiFiInterface::SendCommand(NetworkCommand cmd, SocketNumber socketNum, u
 #if SAME5x
     spi_slave_dma_setup(dataOutLength, dataInLength);
 	WiFiSpiSercom->SPI.INTFLAG.reg = 0xFF;		// clear any pending interrupts
-	WiFiSpiSercom->SPI.INTENSET.reg = SERCOM_SPI_INTENSET_SSL;	// enable the start of transfer (SS low) interrupt
+	WiFiSpiSercom->SPI.INTENSET.reg = SERCOM_SPI_INTENSET_TXC;	// enable the end of transmit interrupt
 	EnableSpi();
 #elif defined(__LPC17xx__)
     spi_slave_dma_setup(dataOutLength, dataInLength);
@@ -1830,27 +1864,6 @@ int32_t WiFiInterface::SendCommand(NetworkCommand cmd, SocketNumber socketNum, u
 
 #if SAME5x
 	{
-		// We don't get an end-of-transfer interrupt, just a start-of-transfer one. So wait until SS is high, then disable the SPI.
-		// The normal maximum block time is about 2K * 8/spi_clock_speed plus any pauses that the ESP takes, which at 26.7MHz clock rate is 620us plus pause time
-		// However, when we send a command that involves writing to flash memory, then the flash write occurs between sending the header and the body, so it takes much longer
-		const uint32_t startedWaitingAt = millis();
-		const bool writingFlash = (   cmd == NetworkCommand::networkAddSsid || cmd == NetworkCommand::networkConfigureAccessPoint
-								   || cmd == NetworkCommand::networkDeleteSsid || cmd == NetworkCommand::networkFactoryReset);
-		while (!digitalRead(EspSSPin))
-		{
-			const uint32_t millisWaiting = millis() - startedWaitingAt;
-			if (millisWaiting >= WiFiTransferTimeoutMillis)
-			{
-				return ResponseTimeout;
-			}
-
-			// The new RTOS SDK for the ESP8266 often interrupts out transfer task for long periods of time. So if the transfer is taking a while to complete, give up the CPU.
-			// Also give up the CPU if we are writing to flash memory, because we know that takes a long time.
-			if (writingFlash || millisWaiting >= 2)
-			{
-				delay(2);
-			}
-		}
 		if (WiFiSpiSercom->SPI.STATUS.bit.BUFOVF)
 		{
 			++spiRxOverruns;
@@ -1929,11 +1942,11 @@ void WiFiInterface::GetNewStatus() noexcept
 	rcvr.Value().messageBuffer[ARRAY_UPB(rcvr.Value().messageBuffer)] = 0;
 	if (rslt < 0)
 	{
-		platform.MessageF(NetworkInfoMessage, "Error retrieving WiFi status message: %s\n", TranslateWiFiResponse(rslt));
+		platform.MessageF(NetworkErrorMessage, "failed to retrieve WiFi status message: %s\n", TranslateWiFiResponse(rslt));
 	}
 	else if (rslt > 0 && rcvr.Value().messageBuffer[0] != 0)
 	{
-		platform.MessageF(NetworkInfoMessage, "WiFi reported error: %s\n", rcvr.Value().messageBuffer);
+		platform.MessageF(NetworkErrorMessage, "WiFi module reported: %s\n", rcvr.Value().messageBuffer);
 	}
 }
 
@@ -1963,7 +1976,7 @@ void WiFiInterface::GetNewStatus() noexcept
 #  error ESP_SPI_HANDLER not defined
 # endif
 
-// SPI interrupt handler, called when NSS goes high (SAM4E, SAME70) or low (SAME5x)
+// SPI interrupt handler, called when NSS goes high (SAM4E, SAME70) or end of transfer (SAME5x)
 void ESP_SPI_HANDLER() noexcept
 {
 	wifiInterface->SpiInterrupt();
@@ -1972,13 +1985,11 @@ void ESP_SPI_HANDLER() noexcept
 void WiFiInterface::SpiInterrupt() noexcept
 {
 #if SAME5x
-	// On the SAM5x we can't get an end-of-transfer interrupt, only a start-of-transfer interrupt.
-	// So we can't disable SPI or DMA in this ISR.
 	const uint8_t status = WiFiSpiSercom->SPI.INTFLAG.reg;
-	if ((status & SERCOM_SPI_INTENSET_SSL) != 0)
+	if ((status & SERCOM_SPI_INTFLAG_TXC) != 0)
 	{
-		WiFiSpiSercom->SPI.INTENCLR.reg = SERCOM_SPI_INTENSET_SSL;		// disable the interrupt
-		WiFiSpiSercom->SPI.INTFLAG.reg = SERCOM_SPI_INTENSET_SSL;		// clear the status
+		WiFiSpiSercom->SPI.INTENCLR.reg = SERCOM_SPI_INTENCLR_TXC;		// disable the interrupt
+		WiFiSpiSercom->SPI.INTFLAG.reg = SERCOM_SPI_INTFLAG_TXC;		// clear the status
 #else
 	const uint32_t status = ESP_SPI->SPI_SR;							// read status and clear interrupt
 	ESP_SPI->SPI_IDR = SPI_IER_NSSR;									// disable the interrupt

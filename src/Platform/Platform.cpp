@@ -47,8 +47,8 @@
 
 #if SAM4E || SAM4S || SAME70
 # include <AnalogIn.h>
-# include <DmacManager.h>
 using LegacyAnalogIn::AdcBits;
+# include <DmacManager.h>
 # include <pmc/pmc.h>
 # if SAME70
 static_assert(NumDmaChannelsUsed <= NumDmaChannelsSupported, "Need more DMA channels in CoreNG");
@@ -116,18 +116,34 @@ using AnalogIn::AdcBits;			// for compatibility with CoreNG, which doesn't have 
 
 #if HAS_VOLTAGE_MONITOR
 
-inline constexpr float AdcReadingToPowerVoltage(uint16_t adcVal)
+# if defined(DUET3_MB6HC)
+
+	float Platform::AdcReadingToPowerVoltage(uint16_t adcVal) const noexcept
+	{
+		return (adcVal * powerMonitorVoltageRange)/(1u << AdcBits);
+	}
+
+	uint16_t Platform::PowerVoltageToAdcReading(float voltage) const noexcept
+	{
+		return (uint16_t)((voltage * (1u << AdcBits))/powerMonitorVoltageRange);
+	}
+
+# else
+
+inline constexpr float AdcReadingToPowerVoltage(uint16_t adcVal) noexcept
 {
 	return adcVal * (PowerMonitorVoltageRange/(1u << AdcBits));
 }
 
-inline constexpr uint16_t PowerVoltageToAdcReading(float voltage)
+inline constexpr uint16_t PowerVoltageToAdcReading(float voltage) noexcept
 {
 	return (uint16_t)(voltage * ((1u << AdcBits)/PowerMonitorVoltageRange));
 }
 
 constexpr uint16_t driverPowerOnAdcReading = PowerVoltageToAdcReading(10.0);			// minimum voltage at which we initialise the drivers
 constexpr uint16_t driverPowerOffAdcReading = PowerVoltageToAdcReading(9.5);			// voltages below this flag the drivers as unusable
+
+#endif
 
 # if ENFORCE_MAX_VIN
 constexpr uint16_t driverOverVoltageAdcReading = PowerVoltageToAdcReading(29.0);		// voltages above this cause driver shutdown
@@ -138,12 +154,12 @@ constexpr uint16_t driverNormalVoltageAdcReading = PowerVoltageToAdcReading(27.5
 
 #if HAS_12V_MONITOR
 
-inline constexpr float AdcReadingToV12Voltage(uint16_t adcVal)
+inline constexpr float AdcReadingToV12Voltage(uint16_t adcVal) noexcept
 {
 	return adcVal * (V12MonitorVoltageRange/(1u << AdcBits));
 }
 
-inline constexpr uint16_t V12VoltageToAdcReading(float voltage)
+inline constexpr uint16_t V12VoltageToAdcReading(float voltage) noexcept
 {
 	return (uint16_t)(voltage * ((1u << AdcBits)/V12MonitorVoltageRange));
 }
@@ -415,7 +431,7 @@ Platform::Platform() noexcept :
 #endif
 	tickState(0), debugCode(0),
 	lastDriverPollMillis(0),
-#ifdef DUET3MINI
+#if SUPPORT_CAN_EXPANSION
 	whenLastCanMessageProcessed(0),
 #endif
 
@@ -551,40 +567,6 @@ void Platform::Init() noexcept
 # endif
 #endif
 
-#if defined(DUET_06_085)
-	ARRAY_INIT(defaultMacAddress, DefaultMacAddress);
-
-	// Motor current setting on Duet 0.6 and 0.8.5
-	I2C::Init();
-	mcpExpansion.setMCP4461Address(0x2E);		// not required for mcpDuet, as this uses the default address
-	ARRAY_INIT(potWipes, POT_WIPES);
-	senseResistor = SENSE_RESISTOR;
-	maxStepperDigipotVoltage = MAX_STEPPER_DIGIPOT_VOLTAGE;
-	stepperDacVoltageRange = STEPPER_DAC_VOLTAGE_RANGE;
-	stepperDacVoltageOffset = STEPPER_DAC_VOLTAGE_OFFSET;
-#elif defined(__ALLIGATOR__)
-	pinMode(EthernetPhyResetPin, INPUT);													// Init Ethernet Phy Reset Pin
-
-	// Alligator Init DAC for motor current vref
-	ARRAY_INIT(spiDacCS, SPI_DAC_CS);
-	dacAlligator.Init(spiDacCS[0]);
-	dacPiggy.Init(spiDacCS[1]);
-	// Get macaddress from EUI48 eeprom
-	eui48MacAddress.Init(Eui48csPin);
-	if (!eui48MacAddress.getEUI48(defaultMacAddress))
-	{
-		ARRAY_INIT(defaultMacAddress, DefaultMacAddress);
-	}
-
-	Microstepping::Init();																	// Init Motor FAULT detect Pin
-	pinMode(ExpansionVoltageLevelPin, ExpansionVoltageLevel==3 ? OUTPUT_LOW : OUTPUT_HIGH); // Init Expansion Voltage Level Pin
-	pinMode(MotorFaultDetectPin,INPUT);														// Init Motor FAULT detect Pin
-	pinMode(ExpansionPiggyDetectPin,INPUT);													// Init Expansion Piggy module presence Pin
-	pinMode(FTDIconverterResetPin,INPUT);													// Init FTDI Serial Converter Reset Pin
-	pinMode(SpiEEPROMcsPin,OUTPUT_HIGH);													// Init Spi EEPROM Cs pin, not implemented, default unselected
-	pinMode(SpiFLASHcsPin,OUTPUT_HIGH);														// Init Spi FLASH Cs pin, not implemented, default unselected
-#endif
-
 #if defined(__LPC17xx__)
 	if (hasDriverCurrentControl)
 	{
@@ -646,6 +628,7 @@ void Platform::Init() noexcept
 
 	// Set up the local drivers. Do this after we have read any direction pins that specify the board type.
 #ifdef DUET3_MB6XD
+	ENABLE_PINS = (GetBoardType() == BoardType::Duet3_6XD_v01) ? ENABLE_PINS_v01 : ENABLE_PINS_v100;
 	unsigned int numErrorHighDrivers = 0;
 #endif
 	for (size_t driver = 0; driver < NumDirectDrivers; ++driver)
@@ -680,19 +663,9 @@ void Platform::Init() noexcept
 
 #ifdef DUET3_MB6XD
 	driverErrPinsActiveLow = (numErrorHighDrivers >= NumDirectDrivers/2);				// determine the error signal polarity by assuming most drivers are not in the error state
-
-	// Set up the step gate timer
-	pmc_enable_periph_clk(STEP_GATE_TC_ID);
-	STEP_GATE_TC->TC_CHANNEL[STEP_GATE_TC_CHAN].TC_CCR = TC_CCR_CLKDIS;
-	STEP_GATE_TC->TC_CHANNEL[STEP_GATE_TC_CHAN].TC_CMR =  TC_CMR_BSWTRG_SET				// software trigger sets TIOB
-														| TC_CMR_BCPC_CLEAR				// RC compare clears TIOB
-														| TC_CMR_WAVE					// waveform mode
-														| TC_CMR_WAVSEL_UP				// count up
-														| TC_CMR_CPCSTOP				// counter clock is stopped when counter reaches RC
-														| TC_CMR_EEVT_XC0   			// set external events from XC0 (this allows TIOB to be an output)
-														| TC_CMR_TCCLKS_TIMER_CLOCK2;	// divide MCLK (150MHz) by 8 = 18.75MHz
+	pmc_enable_periph_clk(STEP_GATE_TC_ID);												// need to do this before we set up the step gate TC
+	UpdateDriverTimings();																// this also initialises the step gate TC
 	SetPinFunction(StepGatePin, StepGatePinFunction);
-	STEP_GATE_TC->TC_CHANNEL[STEP_GATE_TC_CHAN].TC_CCR = TC_CCR_CLKEN;
 #endif
 
 	// Set up the axis+extruder arrays
@@ -702,7 +675,7 @@ void Platform::Init() noexcept
 		driveDriverBits[drive] = 0;
 		motorCurrents[drive] = 0.0;
 		motorCurrentFraction[drive] = 1.0;
-#if HAS_SMART_DRIVERS
+#if HAS_SMART_DRIVERS || SUPPORT_CAN_EXPANSION
 		standstillCurrentPercent[drive] = DefaultStandstillCurrentPercent;
 #endif
 		microstepping[drive] = 16 | 0x8000;						// x16 with interpolation
@@ -738,9 +711,7 @@ void Platform::Init() noexcept
 #endif
 	}
 
-#ifdef DUET3_MB6XD
-	UpdateDriverTimings();
-#else
+#ifndef DUET3_MB6XD
 	for (uint32_t& entry : slowDriverStepTimingClocks)
 	{
 		entry = 0;												// reset all to zero as we have no known slow drivers yet
@@ -797,9 +768,7 @@ void Platform::Init() noexcept
 
 	// If MISO from a MAX31856 board breaks after initialising the MAX31856 then if MISO floats low and reads as all zeros, this looks like a temperature of 0C and no error.
 	// Enable the pullup resistor, with luck this will make it float high instead.
-#if SAM3XA
-	pinMode(APIN_SHARED_SPI_MISO, INPUT_PULLUP);
-#elif defined(__LPC17xx__) || SAME5x
+#if defined(__LPC17xx__) || SAME5x
 	// nothing to do here
 #else
 	pinMode(APIN_USART_SSPI_MISO, INPUT_PULLUP);
@@ -1024,8 +993,7 @@ void Platform::Spin() noexcept
 		return;
 	}
 
-#if defined(DUET3) || defined(DUET3MINI) || defined(__LPC17xx__)
-# if SUPPORT_REMOTE_COMMANDS
+#if SUPPORT_REMOTE_COMMANDS
 	if (CanInterface::InExpansionMode())
 	{
 		if (StepTimer::IsSynced())
@@ -1037,21 +1005,14 @@ void Platform::Spin() noexcept
 			digitalWrite(DiagPin, XNor(DiagOnPolarity, StepTimer::GetTimerTicks() & (1u << 17)) != 0);
 		}
 	}
-	else
-# endif
-	{
-		// Blink the LED at about 2Hz. Duet 3 expansion boards will blink in sync when they have established clock sync with us.
-		digitalWrite(DiagPin, XNor(DiagOnPolarity, StepTimer::GetTimerTicks() & (1u << 19)) != 0);
-	}
 #endif
 
-#if defined(DUET3MINI)
+#if SUPPORT_CAN_EXPANSION
 	// Turn off the ACT LED if it is time to do so
 	if (millis() - whenLastCanMessageProcessed > ActLedFlashTime)
 	{
 		digitalWrite(ActLedPin, !ActOnPolarity);
 	}
-
 #endif
 
 #if HAS_MASS_STORAGE || HAS_SBC_INTERFACE || HAS_EMBEDDED_FILES
@@ -1129,7 +1090,8 @@ void Platform::Spin() noexcept
 			{
 				StandardDriverStatus stat =
 #if defined(DUET3_MB6XD)
-											StandardDriverStatus((HasDriverError(nextDriveToPoll)) ? (uint32_t)1u << StandardDriverStatus::ExternDriverErrorBitPos : 0);
+											// Don't raise driver error events while we are being tested by ATE
+											StandardDriverStatus((!CanInterface::InTestMode() && HasDriverError(nextDriveToPoll)) ? (uint32_t)1u << StandardDriverStatus::ExternDriverErrorBitPos : 0);
 #else
 											SmartDrivers::GetStatus(nextDriveToPoll, true, true);
 #endif
@@ -1224,17 +1186,22 @@ void Platform::Spin() noexcept
 #  if SUPPORT_REMOTE_COMMANDS
 					if (CanInterface::InExpansionMode())
 					{
-						CanInterface::RaiseEvent(EventType::driver_stall, 0, nextDriveToPoll, "", va_list());
+						if (eventOnStallDrivers.Intersects(mask))
+						{
+							CanInterface::RaiseEvent(EventType::driver_stall, 0, nextDriveToPoll, "", va_list());
+						}
 					}
 					else
 #  endif
-					if (eventOnStallDrivers.Intersects(mask))
 					{
-						Event::AddEvent(EventType::driver_stall, 0, CanInterface::GetCanAddress(), nextDriveToPoll, "");
-					}
-					else if (logOnStallDrivers.Intersects(mask))
-					{
-						MessageF(WarningMessage, "Driver %u stalled at Z height %.2f\n", nextDriveToPoll, (double)reprap.GetMove().LiveCoordinate(Z_AXIS, reprap.GetCurrentTool()));
+						if (eventOnStallDrivers.Intersects(mask))
+						{
+							Event::AddEvent(EventType::driver_stall, 0, CanInterface::GetCanAddress(), nextDriveToPoll, "");
+						}
+						else if (logOnStallDrivers.Intersects(mask))
+						{
+							MessageF(WarningMessage, "Driver %u stalled at Z height %.2f\n", nextDriveToPoll, (double)reprap.GetMove().LiveCoordinate(Z_AXIS, reprap.GetCurrentTool()));
+						}
 					}
 				}
 # endif
@@ -1327,7 +1294,7 @@ void Platform::Spin() noexcept
 #if HAS_12V_MONITOR
 			if (numV12UnderVoltageEvents != previousV12UnderVoltageEvents)
 			{
-				MessageF(WarningMessage, "12V under-voltage event (%.1fV)", (double)AdcReadingToPowerVoltage(lastV12UnderVoltageValue));
+				MessageF(WarningMessage, "12V under-voltage event (%.1fV)", (double)AdcReadingToV12Voltage(lastV12UnderVoltageValue));
 				previousV12UnderVoltageEvents = numV12UnderVoltageEvents;
 				reported = true;
 			}
@@ -1504,8 +1471,6 @@ float Platform::GetCpuTemperature() const noexcept
 	const float voltage = (float)adcFilters[CpuTempFilterIndex].GetSum() * (3.3/(float)((1u << AdcBits) * ThermistorAverageReadings));
 # if SAM4E || SAM4S
 	return (voltage - 1.44) * (1000.0/4.7) + 27.0 + mcuTemperatureAdjust;			// accuracy at 27C is +/-13C
-# elif SAM3XA
-	return (voltage - 0.8) * (1000.0/2.65) + 27.0 + mcuTemperatureAdjust;			// accuracy at 27C is +/-45C
 # elif SAME70
 	return (voltage - 0.72) * (1000.0/2.33) + 25.0 + mcuTemperatureAdjust;			// accuracy at 25C is +/-34C
 # else
@@ -1639,6 +1604,42 @@ void Platform::InitialiseInterrupts() noexcept
 //extern "C" uint32_t longestWriteWaitTime, shortestWriteWaitTime, longestReadWaitTime, shortestReadWaitTime;
 //extern uint32_t maxRead, maxWrite;
 
+/*static*/ const char *Platform::GetResetReasonText() noexcept
+{
+#if SAME5x
+	const uint8_t resetReason = RSTC->RCAUSE.reg;
+	// The datasheet says only one of these bits will be set
+	if (resetReason & RSTC_RCAUSE_POR)		{ return "power up"; }
+	if (resetReason & RSTC_RCAUSE_BODCORE)	{ return "core brownout"; }
+	if (resetReason & RSTC_RCAUSE_BODVDD)	{ return "Vdd brownout"; }
+	if (resetReason & RSTC_RCAUSE_WDT)		{ return "watchdog"; }
+	if (resetReason & RSTC_RCAUSE_NVM)		{ return "NVM"; }
+	if (resetReason & RSTC_RCAUSE_EXT)		{ return "reset button"; }
+	if (resetReason & RSTC_RCAUSE_SYST)		{ return "software"; }
+	if (resetReason & RSTC_RCAUSE_BACKUP)	{ return "backup/hibernate"; }
+	return "unknown";
+#elif defined(__LPC17xx__)
+	if (LPC_SYSCTL->RSID & RSID_POR) { return "power up"; }
+	if (LPC_SYSCTL->RSID & RSID_EXTR) { return "reset button"; }
+	if (LPC_SYSCTL->RSID & RSID_WDTR) { return "watchdog"; }
+	if (LPC_SYSCTL->RSID & RSID_BODR) { return "brownout"; }
+	if (LPC_SYSCTL->RSID & RSID_SYSRESET) { return "software"; }
+	if (LPC_SYSCTL->RSID & RSID_LOCKUP) { return "lockup"; }
+	return "unknown";
+#else
+	constexpr const char *_ecv_array resetReasons[8] = { "power up", "backup", "watchdog", "software",
+# ifdef DUET_NG
+	// On the SAM4E a watchdog reset may be reported as a user reset because of the capacitor on the NRST pin.
+	// The SAM4S is the same but the Duet Maestro has a diode in the reset circuit to avoid this problem.
+									"reset button or watchdog",
+# else
+									"reset button",
+# endif
+									"unknown", "unknown", "unknown" };
+	return resetReasons[(REG_RSTC_SR & RSTC_SR_RSTTYP_Msk) >> RSTC_SR_RSTTYP_Pos];
+#endif
+}
+
 // Return diagnostic information
 void Platform::Diagnostics(MessageType mtype) noexcept
 {
@@ -1657,51 +1658,7 @@ void Platform::Diagnostics(MessageType mtype) noexcept
 
 	// Show the up time and reason for the last reset
 	const uint32_t now = (uint32_t)(millis64()/1000u);		// get up time in seconds
-
-#if SAME5x
-	{
-		String<StringLength100> resetString;
-		resetString.printf("Last reset %02d:%02d:%02d ago, cause", (unsigned int)(now/3600), (unsigned int)((now % 3600)/60), (unsigned int)(now % 60));
-		const uint8_t resetReason = RSTC->RCAUSE.reg;
-		// The datasheet says only one of these bits will be set, but we don't assume that
-		if (resetReason & RSTC_RCAUSE_POR)		{ resetString.cat(": power up"); }
-		if (resetReason & RSTC_RCAUSE_BODCORE)	{ resetString.cat(": core brownout"); }
-		if (resetReason & RSTC_RCAUSE_BODVDD)	{ resetString.cat(": Vdd brownout"); }
-		if (resetReason & RSTC_RCAUSE_WDT)		{ resetString.cat(": watchdog"); }
-		if (resetReason & RSTC_RCAUSE_NVM)		{ resetString.cat(": NVM"); }
-		if (resetReason & RSTC_RCAUSE_EXT)		{ resetString.cat(": reset button"); }
-		if (resetReason & RSTC_RCAUSE_SYST)		{ resetString.cat(": software"); }
-		if (resetReason & RSTC_RCAUSE_BACKUP)	{ resetString.cat(": backup/hibernate"); }
-		resetString.cat('\n');
-		Message(mtype, resetString.c_str());
-	}
-#elif defined(__LPC17xx__)
-	// Reset Reason
-	MessageF(mtype, "Last reset %02d:%02d:%02d ago, cause: ",
-			 (unsigned int)(now/3600), (unsigned int)((now % 3600)/60), (unsigned int)(now % 60));
-
-	if (LPC_SYSCTL->RSID & RSID_POR) { Message(mtype, "[power up]"); }
-	if (LPC_SYSCTL->RSID & RSID_EXTR) { Message(mtype, "[reset button]"); }
-	if (LPC_SYSCTL->RSID & RSID_WDTR) { Message(mtype, "[watchdog]"); }
-	if (LPC_SYSCTL->RSID & RSID_BODR) { Message(mtype, "[brownout]"); }
-	if (LPC_SYSCTL->RSID & RSID_SYSRESET) { Message(mtype, "[software]"); }
-	if (LPC_SYSCTL->RSID & RSID_LOCKUP) { Message(mtype, "[lockup]"); }
-
-	Message(mtype, "\n");
-#else
-	const char *_ecv_array resetReasons[8] = { "power up", "backup", "watchdog", "software",
-# ifdef DUET_NG
-	// On the SAM4E a watchdog reset may be reported as a user reset because of the capacitor on the NRST pin.
-	// The SAM4S is the same but the Duet M has a diode in the reset circuit to avoid this problem.
-									"reset button or watchdog",
-# else
-									"reset button",
-# endif
-									"?", "?", "?" };
-	MessageF(mtype, "Last reset %02d:%02d:%02d ago, cause: %s\n",
-			(unsigned int)(now/3600), (unsigned int)((now % 3600)/60), (unsigned int)(now % 60),
-			resetReasons[(REG_RSTC_SR & RSTC_SR_RSTTYP_Msk) >> RSTC_SR_RSTTYP_Pos]);
-#endif
+	MessageF(mtype, "Last reset %02d:%02d:%02d ago, cause: %s\n", (unsigned int)(now/3600), (unsigned int)((now % 3600)/60), (unsigned int)(now % 60), GetResetReasonText());
 
 	// Show the reset code stored at the last software reset
 	{
@@ -1773,7 +1730,7 @@ void Platform::Diagnostics(MessageType mtype) noexcept
 #if HAS_12V_MONITOR
 	// Show the 12V rail voltage
 	MessageF(mtype, "12V rail voltage: min %.1f, current %.1f, max %.1f, under voltage events: %" PRIu32 "\n",
-		(double)AdcReadingToPowerVoltage(lowestV12), (double)AdcReadingToPowerVoltage(currentV12), (double)AdcReadingToPowerVoltage(highestV12), numV12UnderVoltageEvents);
+		(double)AdcReadingToV12Voltage(lowestV12), (double)AdcReadingToV12Voltage(currentV12), (double)AdcReadingToV12Voltage(highestV12), numV12UnderVoltageEvents);
 #endif
 
 	ResetVoltageMonitors();
@@ -1949,7 +1906,7 @@ GCodeResult Platform::DiagnosticTest(GCodeBuffer& gb, const StringRef& reply, Ou
 				size_t numVoltages = 2;
 				gb.GetFloatArray(voltageMinMax, numVoltages, false);
 
-				const float voltage = AdcReadingToPowerVoltage(currentV12);
+				const float voltage = AdcReadingToV12Voltage(currentV12);
 				if (voltage < voltageMinMax[0])
 				{
 					buf->lcatf("12V voltage reading %.1f is lower than expected", (double)voltage);
@@ -2099,16 +2056,16 @@ GCodeResult Platform::DiagnosticTest(GCodeBuffer& gb, const StringRef& reply, Ou
 	case (unsigned int)DiagnosticTestType::AccessMemory:
 		{
 			gb.MustSee('A');
-			uint32_t address = gb.GetUIValue();
+			uint32_t address = (uint32_t)gb.GetIValue();		// allow negative values here so that we can read high addresses
 			unsigned int numValues = (gb.Seen('R')) ? gb.GetUIValue() : 1;
-			uint32_t val;
+			int32_t val;
 			bool dummy;
 			deliberateError = true;								// in case the memory access causes a fault
-			if (gb.TryGetUIValue('V', val, dummy))
+			if (gb.TryGetIValue('V', val, dummy))				// allow negative values so that we can use values like 0xffffffff
 			{
 				while (numValues != 0)
 				{
-					*reinterpret_cast<uint32_t*>(address) = val;
+					*reinterpret_cast<uint32_t*>(address) = (uint32_t)val;
 					address += 4;
 					--numValues;
 				}
@@ -2567,7 +2524,7 @@ void Platform::EnableOneLocalDriver(size_t driver, float requiredCurrent) noexce
 			{
 				SmartDrivers::EnableDrive(driver, true);
 			}
-# if !defined(DUET3MINI)		// no enable pins on 5LC
+# if !defined(DUET3MINI)								// no enable pins on 5LC
 			else
 			{
 				digitalWrite(ENABLE_PINS[driver], enableValues[driver] > 0);
@@ -2730,7 +2687,7 @@ GCodeResult Platform::SetMotorCurrent(size_t axisOrExtruder, float currentOrPerc
 		motorCurrentFraction[axisOrExtruder] = constrain<float>(0.01 * currentOrPercent, 0.0, 1.0);
 		break;
 
-#if HAS_SMART_DRIVERS
+#if HAS_SMART_DRIVERS || SUPPORT_CAN_EXPANSION
 	case 917:
 		standstillCurrentPercent[axisOrExtruder] = constrain<float>(currentOrPercent, 0.0, 100.0);
 		break;
@@ -2815,15 +2772,31 @@ void Platform::UpdateDriverTimings() noexcept
 	}
 
 	// Convert the step pulse width to clocks of the step pulse gate timer. First define some constants.
-	constexpr uint32_t StepGateTcClockFrequency = (SystemCoreClockFreq/2)/8;
-	constexpr float StepGateClocksPerMicrosecond = (float)StepGateTcClockFrequency/1.0e6;
+	constexpr uint32_t StepGateTcBaseClockFrequency = (SystemCoreClockFreq/2)/8;										// the step gate T clock frequency when we use a prescaler of 8
+	constexpr float StepGateBaseClocksPerMicrosecond = (float)StepGateTcBaseClockFrequency * 1.0e-6;
+	const float fclocks = min<float>(ceilf(worstTimings[0] * StepGateBaseClocksPerMicrosecond), (float)(4 * 65535));	// the TC is only 16 bits wide, but we increase the prescaler to 32 if necessary
 
-	const float fclocks = ceilf(worstTimings[0] * StepGateClocksPerMicrosecond);
-	const uint32_t gateClocks = (uint32_t)fclocks;
-	STEP_GATE_TC->TC_CHANNEL[STEP_GATE_TC_CHAN].TC_RC = gateClocks;
+	uint32_t iclocks = (uint32_t)fclocks;
+	uint32_t clockPrescaler = TC_CMR_TCCLKS_TIMER_CLOCK2;								// divide MCLK (150MHz) by 8 = 18.75MHz
+	if (iclocks > 65535)
+	{
+		clockPrescaler = TC_CMR_TCCLKS_TIMER_CLOCK3;									// divide MCLK (150MHz) by 32 = 4.6875MHz
+		iclocks >>= 2;
+	}
+
+	STEP_GATE_TC->TC_CHANNEL[STEP_GATE_TC_CHAN].TC_CCR = TC_CCR_CLKDIS;
+	STEP_GATE_TC->TC_CHANNEL[STEP_GATE_TC_CHAN].TC_CMR =  TC_CMR_BSWTRG_SET				// software trigger sets TIOB
+														| TC_CMR_BCPC_CLEAR				// RC compare clears TIOB
+														| TC_CMR_WAVE					// waveform mode
+														| TC_CMR_WAVSEL_UP				// count up
+														| TC_CMR_CPCSTOP				// counter clock is stopped when counter reaches RC
+														| TC_CMR_EEVT_XC0   			// set external events from XC0 (this allows TIOB to be an output)
+														| clockPrescaler;				// divide MCLK (150MHz) by 8 or 32
+	STEP_GATE_TC->TC_CHANNEL[STEP_GATE_TC_CHAN].TC_RC = iclocks;
+	STEP_GATE_TC->TC_CHANNEL[STEP_GATE_TC_CHAN].TC_CCR = TC_CCR_CLKEN;
 
 	// Convert the quantised step pulse width back to microseconds
-	const float actualStepPulseMicroseconds = fclocks/StepGateClocksPerMicrosecond;
+	const float actualStepPulseMicroseconds = fclocks/StepGateBaseClocksPerMicrosecond;
 
 	// Now convert the other values from microseconds to step clocks
 	stepPulseMinimumPeriodClocks = MicrosecondsToStepClocks(worstTimings[1] + actualStepPulseMicroseconds);
@@ -2835,8 +2808,12 @@ void Platform::UpdateDriverTimings() noexcept
 
 void Platform::GetActualDriverTimings(float timings[4]) noexcept
 {
-	constexpr uint32_t StepGateTcClockFrequency = (SystemCoreClockFreq/2)/8;
-	constexpr float MicrosecondsPerStepGateClock = 1.0e6/(float)StepGateTcClockFrequency;
+	uint32_t StepGateTcClockFrequency = (SystemCoreClockFreq/2)/8;
+	if ((STEP_GATE_TC->TC_CHANNEL[STEP_GATE_TC_CHAN].TC_CMR & TC_CMR_TCCLKS_Msk) == TC_CMR_TCCLKS_TIMER_CLOCK3)
+	{
+		StepGateTcClockFrequency >>= 2;;
+	}
+	const float MicrosecondsPerStepGateClock = 1.0e6/(float)StepGateTcClockFrequency;
 	constexpr float StepClocksToMicroseconds = 1.0e6/(float)StepClockRate;
 	timings[0] = (float)STEP_GATE_TC->TC_CHANNEL[STEP_GATE_TC_CHAN].TC_RC * MicrosecondsPerStepGateClock;
 	timings[1] = stepPulseMinimumPeriodClocks * StepClocksToMicroseconds - timings[0];
@@ -2892,7 +2869,7 @@ int Platform::GetMotorCurrent(size_t drive, int code) const noexcept
 		rslt = motorCurrentFraction[drive] * 100.0;
 		break;
 
-#if HAS_SMART_DRIVERS
+#if HAS_SMART_DRIVERS || SUPPORT_CAN_EXPANSION
 	case 917:
 		rslt = standstillCurrentPercent[drive];
 		break;
@@ -3797,14 +3774,31 @@ void Platform::SetBoardType(BoardType bt) noexcept
 					? BoardType::Duet3Mini_WiFi
 						: BoardType::Duet3Mini_Ethernet;
 #elif defined(DUET3_MB6HC)
-		// Driver 0 direction has a pulldown resistor on v0.6 and v1.0 boards, but won't on v1.01 boards
+		// Driver 0 direction has a pulldown resistor on v0.6 and v1.0 boards, but not on v1.01 or v1.02 boards
+		// Driver 1 has a pulldown resistor on v0.1 and v1.0 boards, however we don't support v0.1 and we don't care about the difference between v0.6 and v1.0, so we don't need to read it
+		// Driver 2 has a pulldown resistor on v1.02 only
+		pinMode(DIRECTION_PINS[2], INPUT_PULLUP);
 		pinMode(DIRECTION_PINS[0], INPUT_PULLUP);
 		delayMicroseconds(20);									// give the pullup resistor time to work
-		board = (digitalRead(DIRECTION_PINS[0])) ? BoardType::Duet3_6HC_v101 : BoardType::Duet3_6HC_v06_100;
+		if (digitalRead(DIRECTION_PINS[2]))
+		{
+			board = (digitalRead(DIRECTION_PINS[0])) ? BoardType::Duet3_6HC_v101 : BoardType::Duet3_6HC_v06_100;
+			powerMonitorVoltageRange = PowerMonitorVoltageRange_v101;
+		}
+		else
+		{
+			board = BoardType::Duet3_6HC_v102;
+			powerMonitorVoltageRange = PowerMonitorVoltageRange_v102;
+		}
+		driverPowerOnAdcReading = PowerVoltageToAdcReading(10.0);
+		driverPowerOffAdcReading = PowerVoltageToAdcReading(9.5);
 #elif defined(DUET3_MB6XD)
-		board = BoardType::Duet3_6XD;
-#elif defined(DUET3MINI4)
-		board = BoardType::Duet3Mini4;
+		// Driver 0 direction has a pulldown resistor on v1.0  boards, but not on v0.1 boards
+		pinMode(DIRECTION_PINS[0], INPUT_PULLUP);
+		delayMicroseconds(20);									// give the pullup resistor time to work
+		board = (digitalRead(DIRECTION_PINS[0])) ? BoardType::Duet3_6XD_v01 : BoardType::Duet3_6XD_v100;
+#elif defined(FMDC_V02) || defined(FMDC_V03)
+		board = BoardType::FMDC;
 #elif defined(SAME70XPLD)
 		board = BoardType::SAME70XPLD_0;
 #elif defined(DUET_NG)
@@ -3879,12 +3873,14 @@ const char *_ecv_array Platform::GetElectronicsString() const noexcept
 	case BoardType::Duet3Mini_WiFi:			return "Duet 3 " BOARD_SHORT_NAME " WiFi";
 	case BoardType::Duet3Mini_Ethernet:		return "Duet 3 " BOARD_SHORT_NAME " Ethernet";
 #elif defined(DUET3_MB6HC)
-	case BoardType::Duet3_6HC_v06_100:			return "Duet 3 " BOARD_SHORT_NAME " v0.6 or 1.0";
-	case BoardType::Duet3_6HC_v101:				return "Duet 3 " BOARD_SHORT_NAME " v1.01 or later";
+	case BoardType::Duet3_6HC_v06_100:		return "Duet 3 " BOARD_SHORT_NAME " v1.0 or earlier";
+	case BoardType::Duet3_6HC_v101:			return "Duet 3 " BOARD_SHORT_NAME " v1.01";
+	case BoardType::Duet3_6HC_v102:			return "Duet 3 " BOARD_SHORT_NAME " v1.02 or later";
 #elif defined(DUET3_MB6XD)
-	case BoardType::Duet3_6XD:				return "Duet 3 " BOARD_SHORT_NAME;					// we have only one version at present
-#elif defined(DUET3MINI4)
-	case BoardType::Duet3Mini4:				return "Duet 3 " BOARD_SHORT_NAME;
+	case BoardType::Duet3_6XD_v01:			return "Duet 3 " BOARD_SHORT_NAME " v0.1";
+	case BoardType::Duet3_6XD_v100:			return "Duet 3 " BOARD_SHORT_NAME " v1.0 or later";
+#elif defined(FMDC_V02) || defined(FMDC_V03)
+	case BoardType::FMDC:					return "Duet 3 " BOARD_SHORT_NAME;
 #elif defined(SAME70XPLD)
 	case BoardType::SAME70XPLD_0:			return "SAME70-XPLD";
 #elif defined(DUET_NG)
@@ -3918,12 +3914,14 @@ const char *_ecv_array Platform::GetBoardString() const noexcept
 	case BoardType::Duet3Mini_WiFi:			return "duet5lcwifi";
 	case BoardType::Duet3Mini_Ethernet:		return "duet5lcethernet";
 #elif defined(DUET3_MB6HC)
-	case BoardType::Duet3_6HC_v06_100:			return "duet3mb6hc100";
-	case BoardType::Duet3_6HC_v101:				return "duet3mb6hc101";
+	case BoardType::Duet3_6HC_v06_100:		return "duet3mb6hc100";
+	case BoardType::Duet3_6HC_v101:			return "duet3mb6hc101";
+	case BoardType::Duet3_6HC_v102:			return "duet3mb6hc102";
 #elif defined(DUET3_MB6XD)
-	case BoardType::Duet3_6XD:				return "duet3mb6xd";					// we have only one version at present
-#elif defined(DUET3MINI4)
-	case BoardType::Duet3Mini4:				return "duet3mini4";
+	case BoardType::Duet3_6XD_v01:			return "duet3mb6xd001";					// we have only one version at present
+	case BoardType::Duet3_6XD_v100:			return "duet3mb6xd100";					// we have only one version at present
+#elif defined(FMDC_V02) || defined(FMDC_V03)
+	case BoardType::FMDC:					return "fmdc";
 #elif defined(SAME70XPLD)
 	case BoardType::SAME70XPLD_0:			return "same70xpld";
 #elif defined(DUET_NG)
@@ -4242,15 +4240,15 @@ float Platform::GetCurrentPowerVoltage() const noexcept
 MinCurMax Platform::GetV12Voltages() const noexcept
 {
 	MinCurMax result;
-	result.minimum = AdcReadingToPowerVoltage(lowestV12);
-	result.current = AdcReadingToPowerVoltage(currentV12);
-	result.maximum = AdcReadingToPowerVoltage(highestV12);
+	result.minimum = AdcReadingToV12Voltage(lowestV12);
+	result.current = AdcReadingToV12Voltage(currentV12);
+	result.maximum = AdcReadingToV12Voltage(highestV12);
 	return result;
 }
 
 float Platform::GetCurrentV12Voltage() const noexcept
 {
-	return AdcReadingToPowerVoltage(currentV12);
+	return AdcReadingToV12Voltage(currentV12);
 }
 
 #endif
@@ -4282,7 +4280,7 @@ float Platform::GetTmcDriversTemperature(unsigned int boardNumber) const noexcep
 
 #endif
 
-#if HAS_STALL_DETECT
+#if HAS_STALL_DETECT || SUPPORT_CAN_EXPANSION
 
 // Configure the motor stall detection, returning true if an error was encountered
 GCodeResult Platform::ConfigureStallDetection(GCodeBuffer& gb, const StringRef& reply, OutputBuffer *& buf) THROWS(GCodeException)
@@ -4290,9 +4288,9 @@ GCodeResult Platform::ConfigureStallDetection(GCodeBuffer& gb, const StringRef& 
 	// Build a bitmap of all the drivers referenced
 	// First looks for explicit driver numbers
 	DriversBitmap drivers;
-#if SUPPORT_CAN_EXPANSION
+# if SUPPORT_CAN_EXPANSION
 	CanDriversList canDrivers;
-#endif
+# endif
 	if (gb.Seen('P'))
 	{
 		DriverId drives[NumDirectDrivers];
@@ -4302,19 +4300,21 @@ GCodeResult Platform::ConfigureStallDetection(GCodeBuffer& gb, const StringRef& 
 		{
 			if (drives[i].IsLocal())
 			{
+# if HAS_SMART_DRIVERS
 				if (drives[i].localDriver >= numSmartDrivers)
 				{
 					reply.printf("Invalid local drive number '%u'", drives[i].localDriver);
 					return GCodeResult::error;
 				}
+# endif
 				drivers.SetBit(drives[i].localDriver);
 			}
-#if SUPPORT_CAN_EXPANSION
+# if SUPPORT_CAN_EXPANSION
 			else
 			{
 				canDrivers.AddEntry(drives[i]);
 			}
-#endif
+# endif
 		}
 	}
 
@@ -4325,9 +4325,9 @@ GCodeResult Platform::ConfigureStallDetection(GCodeBuffer& gb, const StringRef& 
 		{
 			IterateDrivers(axis,
 							[&drivers](uint8_t localDriver){ drivers.SetBit(localDriver); }
-#if SUPPORT_CAN_EXPANSION
+# if SUPPORT_CAN_EXPANSION
 						  , [&canDrivers](DriverId driver){ canDrivers.AddEntry(driver); }
-#endif
+# endif
 						  );
 		}
 	}
@@ -4347,16 +4347,17 @@ GCodeResult Platform::ConfigureStallDetection(GCodeBuffer& gb, const StringRef& 
 				{
 					drivers.SetBit(driver.localDriver);
 				}
-#if SUPPORT_CAN_EXPANSION
+# if SUPPORT_CAN_EXPANSION
 				else
 				{
 					canDrivers.AddEntry(driver);
 				}
-#endif
+# endif
 			}
 		}
 	}
 
+# if HAS_STALL_DETECT
 	// Now check for values to change
 	bool seen = false;
 	if (gb.Seen('S'))
@@ -4407,39 +4408,52 @@ GCodeResult Platform::ConfigureStallDetection(GCodeBuffer& gb, const StringRef& 
 			break;
 		}
 	}
+#else
+	// Board does not have any local drivers with stall detection but may have CAN-connected drivers
+	const bool seen = gb.SeenAny("SFHTR");
+#endif
 
 	if (seen)
 	{
-#if SUPPORT_CAN_EXPANSION
-		return CanInterface::GetSetRemoteDriverStallParameters(canDrivers, gb, reply, buf);
-#else
+# if SUPPORT_CAN_EXPANSION
+		const GCodeResult rslt = CanInterface::GetSetRemoteDriverStallParameters(canDrivers, gb, reply, buf);
+#  if !HAS_SMART_DRIVERS
+		if (drivers.IsNonEmpty())
+		{
+			reply.lcatf("Stall detection not available for external drivers");
+			return max(rslt, GCodeResult::warning);
+		}
+#  endif
+		return rslt;
+# else
 		return GCodeResult::ok;
-#endif
+# endif
 	}
 
 	// Print the stall status
-	if (!OutputBuffer::Allocate(buf))
-	{
-		return GCodeResult::notFinished;
-	}
-
+# if HAS_SMART_DRIVERS
 	if (drivers.IsEmpty()
-#if SUPPORT_CAN_EXPANSION
+#  if SUPPORT_CAN_EXPANSION
 		&& canDrivers.IsEmpty()
-#endif
+#  endif
 	   )
 	{
 		drivers = DriversBitmap::MakeLowestNBits(numSmartDrivers);
 	}
 
+	if (!OutputBuffer::Allocate(buf))
+	{
+		return GCodeResult::notFinished;
+	}
+
 	drivers.Iterate
 		([buf, this, &reply](unsigned int drive, unsigned int) noexcept
 			{
-#if SUPPORT_CAN_EXPANSION
+#  if SUPPORT_CAN_EXPANSION
 				buf->lcatf("Driver 0.%u: ", drive);
-#else
+#  else
 				buf->lcatf("Driver %u: ", drive);
-#endif
+#  endif
 				reply.Clear();										// we use 'reply' as a temporary buffer
 				SmartDrivers::AppendStallConfig(drive, reply);
 				buf->cat(reply.c_str());
@@ -4450,12 +4464,23 @@ GCodeResult Platform::ConfigureStallDetection(GCodeBuffer& gb, const StringRef& 
 						  );
 			}
 		);
+# else
+	if (canDrivers.IsEmpty())
+	{
+		reply.copy("No local drivers have stall detection");
+		return GCodeResult::ok;
+	}
 
+	if (!OutputBuffer::Allocate(buf))
+	{
+		return GCodeResult::notFinished;
+	}
+# endif
 # if SUPPORT_CAN_EXPANSION
 	return CanInterface::GetSetRemoteDriverStallParameters(canDrivers, gb, reply, buf);
 # else
 	return GCodeResult::ok;
-#endif
+# endif
 }
 
 #endif
@@ -4575,7 +4600,7 @@ GCodeResult Platform::UpdateRemoteStepsPerMmAndMicrostepping(AxesBitmap axesAndE
 
 void Platform::OnProcessingCanMessage() noexcept
 {
-#ifdef DUET3MINI			// MB6HC doesn't yet have a ACT LED
+#if SUPPORT_CAN_EXPANSION
 	whenLastCanMessageProcessed = millis();
 	digitalWrite(ActLedPin, ActOnPolarity);				// turn the ACT LED on
 #endif
@@ -5147,10 +5172,12 @@ GCodeResult Platform::EutProcessM915(const CanMessageGeneric& msg, const StringR
 
 	if (!seen)
 	{
-		drivers.Iterate([&reply](unsigned int drive, unsigned int) noexcept
+		drivers.Iterate([&reply, this](unsigned int drive, unsigned int) noexcept
 									{
 										reply.lcatf("Driver %u.%u: ", CanInterface::GetCanAddress(), drive);
 										SmartDrivers::AppendStallConfig(drive, reply);
+										reply.cat(", event on stall: ");
+										reply.cat((eventOnStallDrivers.IsBitSet(drive)) ? "yes" : "no");
 									}
 					   );
 	}

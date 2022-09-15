@@ -23,9 +23,9 @@
 # elif defined(DUET3MINI_V04)
 #  define DUET3MINI		1
 #  define PLATFORM Duet3Mini
-# elif defined(DUET3MINI4)
+# elif defined(FMDC_V02) || defined(FMDC_V03)
 #  define DUET3MINI		1
-#  define PLATFORM Duet3Mini4
+#  define PLATFORM FMDC
 # elif defined(__LPC17xx__)
 #  define PLATFORM LPC
 # else
@@ -177,6 +177,10 @@
 
 #ifndef SUPPORT_TELNET
 # define SUPPORT_TELNET			HAS_NETWORKING
+#endif
+
+#ifndef SUPPORT_MULTICAST_DISCOVERY
+# define SUPPORT_MULTICAST_DISCOVERY	0
 #endif
 
 #ifndef HAS_SBC_INTERFACE

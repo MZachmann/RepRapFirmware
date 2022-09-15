@@ -117,16 +117,18 @@ static void UsbInit() noexcept
 	gpio_set_pin_function(PortAPin(25), PINMUX_PA25H_USB_DP);
 }
 
+#if HAS_HIGH_SPEED_SD
+
 static void SdhcInit() noexcept
 {
 	// Set up SDHC clock
-#if defined(DUET3MINI_V04)
+#if defined(DUET3MINI_V04) || defined(FMDC_V02)
 	// Using SDHC 1
 	hri_mclk_set_AHBMASK_SDHC1_bit(MCLK);
 	hri_gclk_write_PCHCTRL_reg(GCLK, SDHC1_GCLK_ID, GCLK_PCHCTRL_GEN(GclkNum90MHz) | GCLK_PCHCTRL_CHEN);
 	hri_gclk_write_PCHCTRL_reg(GCLK, SDHC1_GCLK_ID_SLOW, GCLK_PCHCTRL_GEN(GclkNum31KHz) | GCLK_PCHCTRL_CHEN);
-#elif defined(DUET3MINI4)
-	// Using SDHC 0
+#elif defined(FMDC_V03)
+	// Using SDHC 0 on v0.3 board
 	hri_mclk_set_AHBMASK_SDHC0_bit(MCLK);
 	hri_gclk_write_PCHCTRL_reg(GCLK, SDHC0_GCLK_ID, GCLK_PCHCTRL_GEN(GclkNum90MHz) | GCLK_PCHCTRL_CHEN);
 	hri_gclk_write_PCHCTRL_reg(GCLK, SDHC0_GCLK_ID_SLOW, GCLK_PCHCTRL_GEN(GclkNum31KHz) | GCLK_PCHCTRL_CHEN);
@@ -141,13 +143,17 @@ static void SdhcInit() noexcept
 	}
 }
 
+#endif
+
 void DeviceInit() noexcept
 {
 	// Ensure the Ethernet PHY or WiFi module is held reset
 	pinMode(EspResetPin, OUTPUT_LOW);
 
 	UsbInit();
+#if HAS_HIGH_SPEED_SD
 	SdhcInit();
+#endif
 
 	AnalogIn::Init(NvicPriorityAdc);
 	AnalogOut::Init();

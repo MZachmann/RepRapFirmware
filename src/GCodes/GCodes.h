@@ -32,7 +32,7 @@ Licence: GPL
 #include "GCodeChannel.h"
 #include "GCodeInput.h"
 #include "GCodeMachineState.h"
-#include "Trigger.h"
+#include <GCodes/TriggerItem.h>
 #include <Tools/Filament.h>
 #include <FilamentMonitors/FilamentMonitor.h>
 #include "RestorePoint.h"
@@ -405,7 +405,7 @@ private:
 	const char *LoadExtrusionAndFeedrateFromGCode(GCodeBuffer& gb, bool isPrintingMove) THROWS(GCodeException);	// Set up the extrusion of a move
 
 	bool Push(GCodeBuffer& gb, bool withinSameFile) noexcept;										// Push feedrate etc on the stack
-	void Pop(GCodeBuffer& gb) noexcept;																// Pop feedrate etc
+	void Pop(GCodeBuffer& gb, bool withinSameFile) noexcept;										// Pop feedrate etc
 	void DisableDrives() noexcept;																	// Turn the motors off
 	bool SendConfigToLine();																		// Deal with M503
 
@@ -504,7 +504,7 @@ private:
 	void SaveResumeInfo(bool wasPowerFailure) noexcept;
 #endif
 
-	void NewMoveAvailable(unsigned int sl) noexcept;							// Flag that a new move is available
+	void NewSingleSegmentMoveAvailable() noexcept;								// Flag that a new move is available
 	void NewMoveAvailable() noexcept;											// Flag that a new move is available
 
 	void SetMoveBufferDefaults() noexcept;										// Set up default values in the move buffer
@@ -556,7 +556,6 @@ private:
 
 	size_t nextGcodeSource;												// The one to check next, using round-robin scheduling
 
-	static Mutex resourceMutex;
 	const GCodeBuffer* resourceOwners[NumResources];					// Which gcode buffer owns each resource
 
 	StraightProbeSettings straightProbeSettings;						// G38 straight probe settings
@@ -664,7 +663,7 @@ private:
 	bool updateFileWhenSimulationComplete;		// true if simulated time should be appended to the file
 
 	// Triggers
-	Trigger triggers[MaxTriggers];				// Trigger conditions
+	TriggerItem triggers[MaxTriggers];				// Trigger conditions
 	TriggerNumbersBitmap triggersPending;		// Bitmap of triggers pending but not yet executed
 
 	// Firmware update

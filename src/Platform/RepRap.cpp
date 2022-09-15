@@ -275,12 +275,12 @@ constexpr ObjectModelTableEntry RepRap::objectModelTable[] =
 #if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES || HAS_SBC_INTERFACE
 	{ "filaments",				OBJECT_MODEL_FUNC_NOSELF(FILAMENTS_DIRECTORY),							ObjectModelEntryFlags::verbose },
 	{ "firmware",				OBJECT_MODEL_FUNC_NOSELF(FIRMWARE_DIRECTORY),							ObjectModelEntryFlags::verbose },
-	{ "gCodes",					OBJECT_MODEL_FUNC(self->platform->GetGCodeDir()),						ObjectModelEntryFlags::verbose },
-	{ "macros",					OBJECT_MODEL_FUNC(self->platform->GetMacroDir()),						ObjectModelEntryFlags::verbose },
+	{ "gCodes",					OBJECT_MODEL_FUNC_NOSELF(Platform::GetGCodeDir()),						ObjectModelEntryFlags::verbose },
+	{ "macros",					OBJECT_MODEL_FUNC_NOSELF(Platform::GetMacroDir()),						ObjectModelEntryFlags::verbose },
 	{ "menu",					OBJECT_MODEL_FUNC_NOSELF(MENU_DIR),										ObjectModelEntryFlags::verbose },
 	{ "scans",					OBJECT_MODEL_FUNC_NOSELF(SCANS_DIRECTORY),								ObjectModelEntryFlags::verbose },
 	{ "system",					OBJECT_MODEL_FUNC_NOSELF(ExpressionValue::SpecialType::sysDir, 0),		ObjectModelEntryFlags::none },
-	{ "web",					OBJECT_MODEL_FUNC(self->platform->GetWebDir()),							ObjectModelEntryFlags::verbose },
+	{ "web",					OBJECT_MODEL_FUNC_NOSELF(Platform::GetWebDir()),						ObjectModelEntryFlags::verbose },
 #endif
 
 	// 2. MachineModel.limits
@@ -344,11 +344,11 @@ constexpr ObjectModelTableEntry RepRap::objectModelTable[] =
 	{ "macroRestarted",			OBJECT_MODEL_FUNC(self->gCodes->GetMacroRestarted()),					ObjectModelEntryFlags::none },
 	{ "messageBox",				OBJECT_MODEL_FUNC_IF(self->mbox.active, self, 5),						ObjectModelEntryFlags::important },
 	{ "msUpTime",				OBJECT_MODEL_FUNC_NOSELF((int32_t)(context.GetStartMillis() % 1000u)),	ObjectModelEntryFlags::live },
-	{ "nextTool",				OBJECT_MODEL_FUNC((int32_t)self->gCodes->GetNewToolNumber()),			ObjectModelEntryFlags::live },
+	{ "nextTool",				OBJECT_MODEL_FUNC((int32_t)self->gCodes->GetNewToolNumber()),			ObjectModelEntryFlags::none },
 #if HAS_VOLTAGE_MONITOR
 	{ "powerFailScript",		OBJECT_MODEL_FUNC(self->gCodes->GetPowerFailScript()),					ObjectModelEntryFlags::none },
 #endif
-	{ "previousTool",			OBJECT_MODEL_FUNC((int32_t)self->previousToolNumber),					ObjectModelEntryFlags::live },
+	{ "previousTool",			OBJECT_MODEL_FUNC((int32_t)self->previousToolNumber),					ObjectModelEntryFlags::none },
 	{ "restorePoints",			OBJECT_MODEL_FUNC_NOSELF(&restorePointsArrayDescriptor),				ObjectModelEntryFlags::none },
 	{ "status",					OBJECT_MODEL_FUNC(self->GetStatusString()),								ObjectModelEntryFlags::live },
 	{ "thisInput",				OBJECT_MODEL_FUNC_IF_NOSELF(context.GetGCodeBuffer() != nullptr, (int32_t)context.GetGCodeBuffer()->GetChannel().ToBaseType()),	ObjectModelEntryFlags::verbose },
@@ -792,8 +792,30 @@ void RepRap::Spin() noexcept
 		diagnosticsDestination = MessageType::NoDestinationMessage;
 	}
 
-	// Check if we need to display a cold extrusion warning
 	const uint32_t now = millis();
+
+#if SUPPORT_REMOTE_COMMANDS
+	const DeferredCommand defCom = deferredCommand;			// capture volatile variable
+	if (defCom != DeferredCommand::none && now - whenDeferredCommandScheduled >= 250)
+	{
+		switch (defCom)
+		{
+		case DeferredCommand::reboot:
+			SoftwareReset(SoftwareResetReason::user);
+			break;
+
+		case DeferredCommand::updateFirmware:
+			UpdateFirmware(IAP_CAN_LOADER_FILE, "");
+			break;
+
+		default:
+			deferredCommand = DeferredCommand::none;
+			break;
+		}
+	}
+#endif
+
+	// Check if we need to display a cold extrusion warning
 	if (now - lastWarningMillis >= MinimumWarningInterval)
 	{
 		ReadLocker lock(toolListLock);
@@ -958,44 +980,58 @@ void RepRap::Diagnostics(MessageType mtype) noexcept
 	justSentDiagnostics = true;
 }
 
-// Turn off the heaters, disable the motors, and deactivate the Heat and Move classes. Leave everything else working.
+// Turn off the heaters, disable the motors, and deactivate the Heat, Move and GCodes classes. Leave everything else working.
 void RepRap::EmergencyStop() noexcept
 {
 #ifdef DUET3_ATE
 	Duet3Ate::PowerOffEUT();
 #endif
 
-	stopped = true;								// a useful side effect of setting this is that it prevents Platform::Tick being called, which is needed when loading IAP into RAM
+	stopped = true;									// a useful side effect of setting this is that it prevents Platform::Tick being called, which is needed when loading IAP into RAM
 
 	// Do not turn off ATX power here. If the nozzles are still hot, don't risk melting any surrounding parts by turning fans off.
 	//platform->SetAtxPower(false);
 
-	platform->DisableAllDrivers();				// need to do this to ensure that any motor brakes are re-engaged
-
-	switch (gCodes->GetMachineType())
+#if SUPPORT_REMOTE_COMMANDS
+	if (CanInterface::InExpansionMode())
 	{
-	case MachineType::cnc:
-		for (size_t i = 0; i < MaxSpindles; i++)
+		platform->EmergencyDisableDrivers();		// disable all local drivers - need to do this to ensure that any motor brakes are re-engaged
+	}
+	else
+#endif
+	{
+		platform->DisableAllDrivers();				// disable all local and remote drivers - need to do this to ensure that any motor brakes are re-engaged
+
+		switch (gCodes->GetMachineType())
 		{
-			platform->AccessSpindle(i).SetState(SpindleState::stopped);
-		}
-		break;
+		case MachineType::cnc:
+			for (size_t i = 0; i < MaxSpindles; i++)
+			{
+				platform->AccessSpindle(i).SetState(SpindleState::stopped);
+			}
+			break;
 
 #if SUPPORT_LASER
-	case MachineType::laser:
-		platform->SetLaserPwm(0);
-		break;
+		case MachineType::laser:
+			platform->SetLaserPwm(0);
+			break;
 #endif
 
-	default:
-		break;
+		default:
+			break;
+		}
 	}
 
-	heat->Exit();								// this also turns off all heaters
-	move->Exit();								// this stops the motors stepping
+	heat->Exit();									// this also turns off all heaters
+	move->Exit();									// this stops the motors stepping
 
 #if SUPPORT_CAN_EXPANSION
-	expansion->EmergencyStop();
+# if SUPPORT_REMOTE_COMMANDS
+	if (!CanInterface::InExpansionMode())
+# endif
+	{
+		expansion->EmergencyStop();
+	}
 #endif
 
 	gCodes->EmergencyStop();
@@ -1118,7 +1154,7 @@ void RepRap::PrintTool(int toolNumber, const StringRef& reply) const noexcept
 	ReadLockedPointer<Tool> const tool = GetTool(toolNumber);
 	if (tool.IsNotNull())
 	{
-		tool->Print(reply);
+		tool->PrintTool(reply);
 	}
 	else
 	{
@@ -2077,7 +2113,13 @@ OutputBuffer *RepRap::GetLegacyStatusResponse(uint8_t type, int seq) const noexc
 	{
 		// Add the static fields
 		response->catf(",\"geometry\":\"%s\",\"axes\":%u,\"totalAxes\":%u,\"axisNames\":\"%s\",\"volumes\":%u,\"numTools\":%u,\"myName\":\"%.s\",\"firmwareName\":\"%.s\"",
-						move->GetGeometryString(), numVisibleAxes, gCodes->GetTotalAxes(), gCodes->GetAxisLetters(), MassStorage::GetNumVolumes(), GetNumberOfContiguousTools(), myName.c_str(), FIRMWARE_NAME);
+						move->GetGeometryString(), numVisibleAxes, gCodes->GetTotalAxes(), gCodes->GetAxisLetters(),
+#if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
+							MassStorage::GetNumVolumes(),
+#else
+							0,
+#endif
+								GetNumberOfContiguousTools(), myName.c_str(), FIRMWARE_NAME);
 	}
 
 	response->cat("}\n");			// include a newline to help PanelDue resync
@@ -2288,7 +2330,7 @@ OutputBuffer *RepRap::GetThumbnailResponse(const char *filename, FilePosition of
 	}
 	response->catf("{\"fileName\":\"%.s\",\"offset\":%" PRIu32 ",", filename, offset);
 
-	FileStore *const f = platform->OpenFile(platform->GetGCodeDir(), filename, OpenMode::read);
+	FileStore *const f = platform->OpenFile(Platform::GetGCodeDir(), filename, OpenMode::read);
 	unsigned int err = 0;
 	if (f != nullptr)
 	{
@@ -2382,7 +2424,7 @@ GCodeResult RepRap::GetFileInfoResponse(const char *filename, OutputBuffer *&res
 #if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
 		// Poll file info for a specific file
 		String<MaxFilenameLength> filePath;
-		if (!MassStorage::CombineName(filePath.GetRef(), platform->GetGCodeDir(), filename))
+		if (!MassStorage::CombineName(filePath.GetRef(), Platform::GetGCodeDir(), filename))
 		{
 			info.isValid = false;
 		}
@@ -2890,8 +2932,6 @@ bool RepRap::CheckFirmwareUpdatePrerequisites(const StringRef& reply, const Stri
 	if (!ok || firstDword !=
 #if SAME5x
 						HSRAM_ADDR + HSRAM_SIZE
-#elif SAM3XA
-						IRAM1_ADDR + IRAM1_SIZE
 #else
 						IRAM_ADDR + IRAM_SIZE
 #endif
@@ -2911,14 +2951,15 @@ bool RepRap::CheckFirmwareUpdatePrerequisites(const StringRef& reply, const Stri
 	return true;
 }
 
-// Update the firmware. Prerequisites should be checked before calling this.
-void RepRap::UpdateFirmware(const StringRef& filenameRef) noexcept
-{
 #if HAS_MASS_STORAGE
-	FileStore * iapFile = platform->OpenFile(FIRMWARE_DIRECTORY, IAP_UPDATE_FILE, OpenMode::read);
+
+// Update the firmware. Prerequisites should be checked before calling this.
+void RepRap::UpdateFirmware(const char *iapFilename, const char *iapParam) noexcept
+{
+	FileStore * iapFile = platform->OpenFile(FIRMWARE_DIRECTORY, iapFilename, OpenMode::read);
 	if (iapFile == nullptr)
 	{
-		iapFile = platform->OpenFile(DEFAULT_SYS_DIR, IAP_UPDATE_FILE, OpenMode::read);
+		iapFile = platform->OpenFile(DEFAULT_SYS_DIR, iapFilename, OpenMode::read);
 		if (iapFile == nullptr)
 		{
 			// This should not happen because we already checked that the file exists, so use a simplified error message
@@ -2932,9 +2973,10 @@ void RepRap::UpdateFirmware(const StringRef& filenameRef) noexcept
 	// Use RAM-based IAP
 	iapFile->Read(reinterpret_cast<char *>(IAP_IMAGE_START), iapFile->Length());
 	iapFile->Close();
-	StartIap(filenameRef.c_str());
-#endif
+	StartIap(iapParam);
 }
+
+#endif
 
 void RepRap::PrepareToLoadIap() noexcept
 {
@@ -3030,8 +3072,6 @@ void RepRap::StartIap(const char *filename) noexcept
 		if (topOfStack + firmwareFileLocation.strlen() + 1 <=
 # if SAME5x
 						HSRAM_ADDR + HSRAM_SIZE
-# elif SAM3XA
-						IRAM1_ADDR + IRAM1_SIZE
 # else
 						IRAM_ADDR + IRAM_SIZE
 # endif

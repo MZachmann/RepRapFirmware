@@ -34,7 +34,8 @@ namespace CanInterface
 
 #if SUPPORT_REMOTE_COMMANDS
 	bool InExpansionMode() noexcept;
-	void SwitchToExpansionMode(CanAddress addr) noexcept;
+	bool InTestMode() noexcept;
+	void SwitchToExpansionMode(CanAddress addr, bool useTestMode) noexcept;
 
 	void SendAnnounce(CanMessageBuffer *buf) noexcept;
 	void RaiseEvent(EventType type, uint16_t param, uint8_t device, const char *format, va_list vargs) noexcept;
@@ -107,6 +108,11 @@ namespace CanInterface
 	GCodeResult StartAccelerometer(DriverId device, uint8_t axes, uint16_t numSamples, uint8_t mode, const GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);
 #endif
 	GCodeResult StartClosedLoopDataCollection(DriverId device, uint16_t filter, uint16_t numSamples, uint16_t rateRequested, uint8_t movementRequested, uint8_t mode, const GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);
+
+#if SUPPORT_MULTICAST_DISCOVERY
+	void SetStatusLedIdentify(uint32_t seconds) noexcept;
+	void SetStatusLedNormal() noexcept;
+#endif
 
 #if DUAL_CAN
 namespace ODrive {

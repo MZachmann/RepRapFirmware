@@ -97,8 +97,10 @@ private:
 		ExchangingHeaderResponse,
 		ExchangingData,
 		ExchangingDataResponse,
+		ExchangingDataResponseRetry,
 		ProcessingData,
-		Resetting
+		Resetting,
+		ResettingDataResponse
 	} state;
 
 	// Transfer properties
@@ -137,7 +139,7 @@ private:
 	void ExchangeHeader() noexcept;
 	void ExchangeResponse(uint32_t response) noexcept;
 	void ExchangeData() noexcept;
-	void ResetTransfer(bool ownRequest) noexcept;
+	void RestartTransfer(bool ownRequest) noexcept;
 	uint32_t CalcCRC32(const char *buffer, size_t length) const noexcept;
 
 	template<typename T> const T *ReadDataHeader() noexcept;
@@ -155,8 +157,8 @@ private:
 
 inline bool DataTransfer::IsConnectionReset() const noexcept
 {
-	uint16_t nextTransferNumber = lastTransferNumber + 1;
-	return lastTransferNumber != 0 && (nextTransferNumber != rxHeader.sequenceNumber);
+	uint16_t nextTransferNumber = lastTransferNumber + 1u;
+	return (rxHeader.formatCode == SbcFormatCode) && (rxHeader.sequenceNumber != nextTransferNumber);
 }
 
 inline size_t DataTransfer::PacketsToRead() const noexcept
