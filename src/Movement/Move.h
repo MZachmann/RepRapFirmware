@@ -16,6 +16,7 @@
 #include "BedProbing/RandomProbePointSet.h"
 #include "BedProbing/Grid.h"
 #include "Kinematics/Kinematics.h"
+#include "Kinematics/ScrewMap.h"
 #include <GCodes/RestorePoint.h>
 #include <Math/Deviation.h>
 
@@ -152,6 +153,9 @@ public:
 	bool LoadHeightMapFromFile(FileStore *f, const char *fname, const StringRef& r) noexcept;	// Load the height map from a file returning true if an error occurred
 	bool SaveHeightMapToFile(FileStore *f, const char *fname) noexcept;						// Save the height map to a file returning true if an error occurred
 #endif
+
+    ScrewMap& GetScrewMap() noexcept { return screwMap; };
+    const ScrewMap& GetScrewMap() const noexcept { return screwMap; };
 
 	const RandomProbePointSet& GetProbePoints() const noexcept { return probePoints; }		// Return the probe point set constructed from G30 commands
 
@@ -290,6 +294,7 @@ private:
 	float tanXZ() const noexcept { return tangents[2]; }
 
 	HeightMap heightMap;    							// The grid definition in use and height map for G29 bed probing
+	ScrewMap screwMap;                                  // lead screw mapping tables
 	RandomProbePointSet probePoints;					// G30 bed probe points
 	float taperHeight;									// Height over which we taper
 	float recipTaperHeight;								// Reciprocal of the taper height
