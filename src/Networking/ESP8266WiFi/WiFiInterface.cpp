@@ -25,7 +25,7 @@ static_assert(SsidLength == SsidBufferLength, "SSID lengths in NetworkDefs.h and
 
 // Define exactly one of the following as 1, the other as zero
 
-#if defined(DUET_NG)
+#if SAM4E
 
 # include <pmc/pmc.h>
 # include <spi/spi.h>
@@ -36,12 +36,19 @@ static_assert(SsidLength == SsidBufferLength, "SSID lengths in NetworkDefs.h and
 # define USE_DMAC_MANAGER	0		// use SAMD/SAME DMA controller via DmacManager module
 # define USE_XDMAC			0		// use SAME7 XDMA controller
 
-#elif defined(DUET3_V03) || defined(SAME70XPLD)
+#elif SAME70
+
+# include <pmc/pmc.h>
+# include <spi/spi.h>
+# include <DmacManager.h>
 
 # define USE_PDC			0		// use SAM4 peripheral DMA controller
 # define USE_DMAC			0		// use SAM4 general DMA controller
 # define USE_DMAC_MANAGER	0		// use SAMD/SAME DMA controller via DmacManager module
 # define USE_XDMAC			1		// use SAME7 XDMA controller
+
+static __nocache MessageBufferOut messageBufferOut;
+static __nocache MessageBufferIn messageBufferIn;
 
 #elif SAME5x
 
@@ -60,18 +67,6 @@ constexpr Pin APIN_ESP_SPI_MISO = EspMisoPin;
 constexpr Pin APIN_ESP_SPI_SCK = EspSclkPin;
 constexpr IRQn ESP_SPI_IRQn = WiFiSpiSercomIRQn;
 
-#elif defined(__LPC17xx__)
-
-# define USE_PDC            0		// use SAM4 peripheral DMA controller
-# define USE_DMAC           0		// use SAM4 general DMA controller
-# define USE_DMAC_MANAGER	0		// use SAMD/SAME DMA controller via DmacManager module
-# define USE_XDMAC          0		// use SAME7 XDMA controller
-
-// Compatibility with existing RRF Code
-constexpr Pin APIN_ESP_SPI_MISO = SPI0_MOSI;
-constexpr Pin APIN_ESP_SPI_SCK = SPI0_SCK;
-constexpr SSPChannel ESP_SPI = SSP0;
-
 #else
 # error Unknown board
 #endif
@@ -88,15 +83,20 @@ constexpr SSPChannel ESP_SPI = SSP0;
 # include "xdmac/xdmac.h"
 #endif
 
-#if SAME5x
-#elif !defined(__LPC17xx__)
+#if !SAME5x
 # include "matrix/matrix.h"
 #endif
 
-const uint32_t WiFiResponseTimeoutMillis = 500;					// Timeout includes time-intensive flash-access operations; highest measured is 234 ms.
+const uint32_t WiFiSlowResponseTimeoutMillis = 500;		// SPI timeout when when the ESP has to access the SPIFFS filesytem; highest measured is 234ms.
+const uint32_t WiFiFastResponseTimeoutMillis = 100;		// SPI timeout when when the ESP does not have to access SPIFFS filesystem. 20ms is too short on Duet 2 with both FTP and Telnet enabled.
 const uint32_t WiFiWaitReadyMillis = 100;
-const uint32_t WiFiStartupMillis = 8000;
+const uint32_t WiFiStartupMillis = 15000;				// Formatting the SPIFFS partition can take up to 10s.
+
+#if WIFI_USES_ESP32
+const uint32_t WiFiStableMillis = 500;					// Spin() fails in state starting2 when starting wifi in config.g if we use 300 or lower here. When testing, 400 was OK.
+#else
 const uint32_t WiFiStableMillis = 100;
+#endif
 
 const unsigned int MaxHttpConnections = 4;
 
@@ -131,7 +131,7 @@ static inline void DisableSpi() noexcept
 #endif
 }
 
-static inline void EnableSpi()
+static inline void EnableSpi() noexcept
 {
 #if SAME5x
 	WiFiSpiSercom->SPI.CTRLA.reg |= SERCOM_SPI_CTRLA_ENABLE;
@@ -142,7 +142,7 @@ static inline void EnableSpi()
 }
 
 // Clear the transmit and receive registers and put the SPI into slave mode, SPI mode 1
-static inline void ResetSpi()
+static inline void ResetSpi() noexcept
 {
 #if SAME5x
 	WiFiSpiSercom->SPI.CTRLA.reg |= SERCOM_SPI_CTRLA_SWRST;
@@ -186,6 +186,10 @@ void SERIAL_WIFI_ISR3() noexcept
 	SerialWiFiDevice->Interrupt3();
 }
 
+#else
+
+#define SERIAL_WIFI_DEVICE	(SerialWiFi)
+
 #endif
 
 static volatile bool transferPending = false;
@@ -215,10 +219,6 @@ static void debugPrintBuffer(const char *msg, void *buf, size_t dataLength) noex
 	}
 	debugPrintf("\n");
 }
-#endif
-
-#ifdef __LPC17xx__
-# include "WiFiInterface_LPC.hpp"
 #endif
 
 static void EspTransferRequestIsr(CallbackParameter) noexcept
@@ -259,8 +259,8 @@ WiFiInterface::WiFiInterface(Platform& p) noexcept
 		protocolEnabled[i] = (i == HttpProtocol);
 	}
 
-	strcpy(actualSsid, "(unknown)");
-	strcpy(wiFiServerVersion, "(unknown)");
+	actualSsid.copy("(unknown)");
+	wiFiServerVersion.copy("(unknown)");
 
 #ifdef DUET3MINI
 	SerialWiFiDevice = new AsyncSerial(WiFiUartSercomNumber, WiFiUartRxPad, 512, 512, SerialWiFiPortInit, SerialWiFiPortDeinit);
@@ -277,21 +277,23 @@ WiFiInterface::WiFiInterface(Platform& p) noexcept
 // Otherwise the table will be allocated in RAM instead of flash, which wastes too much RAM.
 
 // Macro to build a standard lambda function that includes the necessary type conversions
-#define OBJECT_MODEL_FUNC(_ret) OBJECT_MODEL_FUNC_BODY(WiFiInterface, _ret)
+#define OBJECT_MODEL_FUNC(...) OBJECT_MODEL_FUNC_BODY(WiFiInterface, __VA_ARGS__)
+#define OBJECT_MODEL_FUNC_IF(_condition,...) OBJECT_MODEL_FUNC_IF_BODY(WiFiInterface, _condition, __VA_ARGS__)
 
 constexpr ObjectModelTableEntry WiFiInterface::objectModelTable[] =
 {
 	// These entries must be in alphabetical order
-	{ "actualIP",			OBJECT_MODEL_FUNC(self->ipAddress),				ObjectModelEntryFlags::none },
-	{ "firmwareVersion",	OBJECT_MODEL_FUNC(self->wiFiServerVersion),		ObjectModelEntryFlags::none },
-	{ "gateway",			OBJECT_MODEL_FUNC(self->gateway),				ObjectModelEntryFlags::none },
-	{ "mac",				OBJECT_MODEL_FUNC(self->macAddress),			ObjectModelEntryFlags::none },
-	{ "state",				OBJECT_MODEL_FUNC(self->GetStateName()),		ObjectModelEntryFlags::none },
-	{ "subnet",				OBJECT_MODEL_FUNC(self->netmask),				ObjectModelEntryFlags::none },
-	{ "type",				OBJECT_MODEL_FUNC_NOSELF("wifi"),				ObjectModelEntryFlags::none },
+	{ "actualIP",			OBJECT_MODEL_FUNC(self->ipAddress),															ObjectModelEntryFlags::none },
+	{ "firmwareVersion",	OBJECT_MODEL_FUNC(self->wiFiServerVersion.c_str()),											ObjectModelEntryFlags::none },
+	{ "gateway",			OBJECT_MODEL_FUNC(self->gateway),															ObjectModelEntryFlags::none },
+	{ "mac",				OBJECT_MODEL_FUNC_IF(self->GetState() == NetworkState::active, self->macAddress),			ObjectModelEntryFlags::none },
+	{ "ssid",				OBJECT_MODEL_FUNC_IF(self->GetState() == NetworkState::active, self->actualSsid.c_str()),	ObjectModelEntryFlags::none },
+	{ "state",				OBJECT_MODEL_FUNC(self->GetStateName()),													ObjectModelEntryFlags::none },
+	{ "subnet",				OBJECT_MODEL_FUNC(self->netmask),															ObjectModelEntryFlags::none },
+	{ "type",				OBJECT_MODEL_FUNC_NOSELF("wifi"),															ObjectModelEntryFlags::none },
 };
 
-constexpr uint8_t WiFiInterface::objectModelTableDescriptor[] = { 1, 7 };
+constexpr uint8_t WiFiInterface::objectModelTableDescriptor[] = { 1, 8 };
 
 DEFINE_GET_OBJECT_MODEL_TABLE(WiFiInterface)
 
@@ -471,8 +473,14 @@ void WiFiInterface::Activate() noexcept
 	{
 		activated = true;
 
+#if SAME70
+		bufferOut = &messageBufferOut;
+		bufferIn = &messageBufferIn;
+#else
 		bufferOut = new MessageBufferOut;
 		bufferIn = new MessageBufferIn;
+#endif
+
 #if HAS_MASS_STORAGE || HAS_EMBEDDED_FILES
 		uploader = new WifiFirmwareUploader(SERIAL_WIFI_DEVICE, *this);
 #endif
@@ -512,7 +520,7 @@ GCodeResult WiFiInterface::GetNetworkState(const StringRef& reply) noexcept
 		reply.cat(TranslateWiFiState(currentMode));
 		if (currentMode == WiFiState::connected || currentMode == WiFiState::runningAsAccessPoint)
 		{
-			reply.catf("%s, IP address %s", actualSsid, IP4String(ipAddress).c_str());
+			reply.catf("%s, IP address %s", actualSsid.c_str(), IP4String(ipAddress).c_str());
 		}
 		break;
 	default:
@@ -533,23 +541,27 @@ void WiFiInterface::Start() noexcept
 {
 	// The ESP8266 is held in a reset state by a pulldown resistor until we enable it.
 	// Make sure the ESP8266 is in the reset state
+#if !WIFI_USES_ESP32
 	pinMode(EspResetPin, OUTPUT_LOW);
-
-#if defined(DUET_NG) || defined(DUET3MINI)
-	pinMode(EspEnablePin, OUTPUT_LOW);
 #endif
+
+	pinMode(EspEnablePin, OUTPUT_LOW);
 
 	// Set up our transfer request pin (GPIO4) as an output and set it low
 	pinMode(SamTfrReadyPin, OUTPUT_LOW);
 
-	// Set up our data ready pin (ESP GPIO0) as an output and set it high ready to boot the ESP from flash
+	// Set up our data ready pin (ESP8266 and ESP32 GPIO0) as an output and set it high ready to boot the ESP from flash
 	pinMode(EspDataReadyPin, OUTPUT_HIGH);
 
-	// GPIO2 also needs to be high to boot. It's connected to MISO on the SAM, so set the pullup resistor on that pin
-	pinMode(APIN_ESP_SPI_MISO, INPUT_PULLUP);
-
-	// Set our CS input (ESP GPIO15) low ready for booting the ESP. This also clears the transfer ready latch.
+#if WIFI_USES_ESP32
+	pinMode(SamCsPin, INPUT_PULLUP);		// ensure that SS is pulled high
+#else
+	// Set our CS input (ESP8266 GPIO15) low ready for booting the ESP. This also clears the transfer ready latch on older Duet 2 boards.
 	pinMode(SamCsPin, OUTPUT_LOW);
+
+	// ESP8266 GPIO2 also needs to be high to boot. It's connected to MISO on the SAM, so set the pullup resistor on that pin
+	pinMode(APIN_ESP_SPI_MISO, INPUT_PULLUP);
+#endif
 
 	// Make sure it has time to reset - no idea how long it needs, but 20ms should be plenty
 	delay(50);
@@ -564,8 +576,10 @@ void WiFiInterface::Start() noexcept
 	// - so 18ms is probably long enough. Use 50ms for safety.
 	delay(50);
 
+#if !WIFI_USES_ESP32
 	// Relinquish control of our CS pin so that the ESP can take it over
 	pinMode(SamCsPin, INPUT);
+#endif
 
 	// Set the data request pin to be an input
 	pinMode(EspDataReadyPin, INPUT_PULLUP);
@@ -589,10 +603,11 @@ void WiFiInterface::Stop() noexcept
 		MutexLocker lock(interfaceMutex);
 
 		digitalWrite(SamTfrReadyPin, false);		// tell the ESP we can't receive
+
+#if !WIFI_USES_ESP32
 		digitalWrite(EspResetPin, false);			// put the ESP back into reset
-#if defined(DUET_NG) || defined(DUET3MINI)
-		digitalWrite(EspEnablePin, false);
 #endif
+		digitalWrite(EspEnablePin, false);
 		DisableEspInterrupt();						// ignore IRQs from the transfer request pin
 
 		NVIC_DisableIRQ(ESP_SPI_IRQn);
@@ -629,6 +644,7 @@ void WiFiInterface::Spin() noexcept
 			if (risingEdges >= 2) // the first rising edge is the one coming out of reset
 			{
 				lastTickMillis = now;
+				startupRetryCount = 0;
 				SetState(NetworkState::starting2);
 			}
 			else
@@ -644,7 +660,7 @@ void WiFiInterface::Spin() noexcept
 
 	case NetworkState::starting2:
 		{
-			// See if the ESP8266 has kept its pins at their stable values for long enough
+			// See if the WiFi module has kept its pins at their stable values for long enough
 			const uint32_t now = millis();
 			if (digitalRead(SamCsPin) && digitalRead(EspDataReadyPin) && !digitalRead(APIN_ESP_SPI_SCK))
 			{
@@ -657,9 +673,9 @@ void WiFiInterface::Spin() noexcept
 					// Read the status to get the WiFi server version and MAC address
 					Receiver<NetworkStatusResponse> status;
 					int32_t rc = SendCommand(NetworkCommand::networkGetStatus, 0, 0, nullptr, 0, status);
-					if (rc > 0)
+					if (rc >= (int32_t)MinimumStatusResponseLength)
 					{
-						SafeStrncpy(wiFiServerVersion, status.Value().versionText, ARRAY_SIZE(wiFiServerVersion));
+						wiFiServerVersion.copy(status.Value().versionText);
 						macAddress.SetFromBytes(status.Value().macAddress);
 
 						// Set the hostname before anything else is done
@@ -683,12 +699,17 @@ void WiFiInterface::Spin() noexcept
 						SetState(NetworkState::active);
 						espStatusChanged = true;				// make sure we fetch the current state and enable the ESP interrupt
 					}
+					else if (startupRetryCount < 3)
+					{
+						// When we use the ESP32 module, the first startup attempt often fails when we try to start up straight after running config.g
+						++startupRetryCount;
+						lastTickMillis = now;
+					}
 					else
 					{
-						// Something went wrong, maybe a bad firmware image was flashed
-						// Disable the WiFi chip again in this case
-						platform.MessageF(NetworkErrorMessage, "failed to initialise WiFi module: %s\n", TranslateWiFiResponse(rc));
+						// Something went wrong, maybe a bad firmware image was flashed. Disable the WiFi chip again in this case
 						Stop();
+						platform.MessageF(NetworkErrorMessage, "failed to initialise WiFi module: %s\n", TranslateWiFiResponse(rc));
 					}
 				}
 			}
@@ -732,7 +753,7 @@ void WiFiInterface::Spin() noexcept
 			}
 			else if (requestedMode == WiFiState::connected)
 			{
-				rslt = SendCommand(NetworkCommand::networkStartClient, 0, 0, 0, requestedSsid, SsidLength, nullptr, 0);
+				rslt = SendCommand(NetworkCommand::networkStartClient, 0, 0, 0, requestedSsid.Pointer(), requestedSsid.Capacity(), nullptr, 0);
 			}
 			else if (requestedMode == WiFiState::runningAsAccessPoint)
 			{
@@ -813,13 +834,13 @@ void WiFiInterface::Spin() noexcept
 					if (SendCommand(NetworkCommand::networkGetStatus, 0, 0, nullptr, 0, status) > 0)
 					{
 						ipAddress.SetV4LittleEndian(status.Value().ipAddress);
-						SafeStrncpy(actualSsid, status.Value().ssid, SsidLength);
+						actualSsid.copy(status.Value().ssid);
 					}
 					InitSockets();
 					reconnectCount = 0;
 					platform.MessageF(NetworkInfoMessage, "WiFi module is %s%s, IP address %s\n",
 						TranslateWiFiState(currentMode),
-						actualSsid,
+						actualSsid.c_str(),
 						IP4String(ipAddress).c_str());
 				}
 				break;
@@ -899,20 +920,20 @@ const char* WiFiInterface::TranslateEspResetReason(uint32_t reason) noexcept
 
 void WiFiInterface::Diagnostics(MessageType mtype) noexcept
 {
-	platform.MessageF(mtype, "= WiFi =\nNetwork state is %s\n", GetStateName());
-	platform.MessageF(mtype, "WiFi module is %s\n", TranslateWiFiState(currentMode));
-	platform.MessageF(mtype, "Failed messages: pending %u, notready %u, noresp %u\n", transferAlreadyPendingCount, readyTimeoutCount, responseTimeoutCount);
-
-#if 0
-	// The underrun/overrun counters don't work at present
-	platform.MessageF(mtype, "SPI underruns %u, overruns %u\n", spiTxUnderruns, spiRxOverruns);
-#endif
+	platform.MessageF(mtype,
+						"= WiFi =\nInterface state: %s\n"
+						"Module is %s\n"
+						"Failed messages: pending %u, notready %u, noresp %u\n",
+						 	 GetStateName(),
+							 TranslateWiFiState(currentMode),
+							 transferAlreadyPendingCount, readyTimeoutCount, responseTimeoutCount
+					 );
 
 	if (GetState() != NetworkState::disabled && GetState() != NetworkState::starting1 && GetState() != NetworkState::starting2)
 	{
 		Receiver<NetworkStatusResponse> status;
 		status.Value().clockReg = 0xFFFFFFFF;				// older WiFi firmware doesn't return this value, so preset it
-		if (SendCommand(NetworkCommand::networkGetStatus, 0, 0, nullptr, 0, status) > 0)
+		if (SendCommand(NetworkCommand::networkGetStatus, 0, 0, nullptr, 0, status) >= (int32_t)MinimumStatusResponseLength)
 		{
 			NetworkStatusResponse& r = status.Value();
 			r.versionText[ARRAY_UPB(r.versionText)] = 0;
@@ -969,8 +990,7 @@ GCodeResult WiFiInterface::EnableInterface(int mode, const StringRef& ssid, cons
 											: WiFiState::disabled;
 	if (modeRequested == WiFiState::connected)
 	{
-		memset(requestedSsid, 0, sizeof(requestedSsid));
-		SafeStrncpy(requestedSsid, ssid.c_str(), ARRAY_SIZE(requestedSsid));
+		requestedSsid.copy(ssid.c_str());
 	}
 
 	if (activated)
@@ -1405,8 +1425,6 @@ void WiFiInterface::TerminateDataPort() noexcept
 	}
 }
 
-#ifndef __LPC17xx__
-
 #if USE_PDC
 static Pdc *spi_pdc;
 #endif
@@ -1414,9 +1432,6 @@ static Pdc *spi_pdc;
 #if USE_XDMAC
 
 // XDMAC hardware
-const uint32_t SPI0_XDMAC_TX_CH_NUM = 1;
-const uint32_t SPI0_XDMAC_RX_CH_NUM = 2;
-
 static xdmac_channel_config_t xdmac_tx_cfg, xdmac_rx_cfg;
 
 #endif
@@ -1425,58 +1440,58 @@ static xdmac_channel_config_t xdmac_tx_cfg, xdmac_rx_cfg;
 
 static inline void spi_rx_dma_enable() noexcept
 {
-#if USE_DMAC
+# if USE_DMAC
 	dmac_channel_enable(DMAC, DmacChanWiFiRx);
-#endif
+# endif
 
-#if USE_XDMAC
+# if USE_XDMAC
 	xdmac_channel_enable(XDMAC, DmacChanWiFiRx);
-#endif
+# endif
 
-#if USE_DMAC_MANAGER
+# if USE_DMAC_MANAGER
 	DmacManager::EnableChannel(DmacChanWiFiRx, DmacPrioWiFi);
-#endif
+# endif
 }
 
 static inline void spi_tx_dma_enable() noexcept
 {
-#if USE_DMAC
+# if USE_DMAC
 	dmac_channel_enable(DMAC, DmacChanWiFiTx);
-#endif
+# endif
 
-#if USE_XDMAC
+# if USE_XDMAC
 	xdmac_channel_enable(XDMAC, DmacChanWiFiTx);
-#endif
+# endif
 
-#if USE_DMAC_MANAGER
+# if USE_DMAC_MANAGER
 	DmacManager::EnableChannel(DmacChanWiFiTx, DmacPrioWiFi);
-#endif
+# endif
 }
 
 static inline void spi_rx_dma_disable() noexcept
 {
-#if USE_DMAC
+# if USE_DMAC
 	dmac_channel_disable(DMAC, DmacChanWiFiRx);
-#endif
+# endif
 
-#if USE_XDMAC
+# if USE_XDMAC
 	xdmac_channel_disable(XDMAC, DmacChanWiFiRx);
-#endif
+# endif
 
-#if USE_DMAC_MANAGER
+# if USE_DMAC_MANAGER
 	DmacManager::DisableChannel(DmacChanWiFiRx);
-#endif
+# endif
 }
 
 static inline void spi_tx_dma_disable() noexcept
 {
-#if USE_DMAC
+# if USE_DMAC
 	dmac_channel_disable(DMAC, DmacChanWiFiTx);
-#endif
+# endif
 
-#if USE_XDMAC
+# if USE_XDMAC
 	xdmac_channel_disable(XDMAC, DmacChanWiFiTx);
-#endif
+# endif
 
 #if USE_DMAC_MANAGER
 	DmacManager::DisableChannel(DmacChanWiFiTx);
@@ -1527,16 +1542,15 @@ static bool spi_dma_check_rx_complete() noexcept
 #endif
 
 #if USE_XDMAC
-	const uint32_t status = xdmac_channel_get_status(XDMAC);
-	const uint32_t channelStatus = XDMAC->XDMAC_CHID[DmacChanWiFiRx].XDMAC_CC;
-	if (   ((status & (1 << DmacChanWiFiRx)) == 0)						// channel is not enabled
-		|| (((channelStatus & XDMAC_CC_RDIP) == XDMAC_CC_RDIP_DONE) && ((channelStatus & XDMAC_CC_WRIP) == XDMAC_CC_WRIP_DONE))	// controller is neither reading nor writing via this channel
-	)
+	if ((XDMAC->XDMAC_GS & (1u << DmacChanWiFiRx)) == 0)
 	{
-		// Disable the channel.
-		// We also need to set the resume bit, otherwise it remains suspended when we re-enable it.
-		xdmac_channel_disable(XDMAC, DmacChanWiFiRx);
-		xdmac_channel_readwrite_resume(XDMAC, DmacChanWiFiRx);
+		return true;			// channel is not enabled
+	}
+
+	if ((XDMAC->XDMAC_CHID[DmacChanWiFiRx].XDMAC_CC & (XDMAC_CC_RDIP | XDMAC_CC_WRIP)) == 0)
+	{
+		XDMAC->XDMAC_GD = (1u << DmacChanWiFiRx);						// disable the channel, which flushes the FIFO
+		while ((XDMAC->XDMAC_GS & (1u << DmacChanWiFiRx)) != 0) { }		// wait for disable to complete
 		return true;
 	}
 #endif
@@ -1568,12 +1582,6 @@ static void spi_tx_dma_setup(const void *buf, uint32_t transferLength) noexcept
 
 #if USE_XDMAC
 	xdmac_disable_interrupt(XDMAC, DmacChanWiFiTx);
-	const uint32_t xdmaint = (XDMAC_CIE_BIE |
-			XDMAC_CIE_DIE   |
-			XDMAC_CIE_FIE   |
-			XDMAC_CIE_RBIE  |
-			XDMAC_CIE_WBIE  |
-			XDMAC_CIE_ROIE);
 
 	xdmac_tx_cfg.mbr_ubc = transferLength;
 	xdmac_tx_cfg.mbr_sa = reinterpret_cast<uint32_t>(buf);
@@ -1587,7 +1595,7 @@ static void spi_tx_dma_setup(const void *buf, uint32_t transferLength) noexcept
 			XDMAC_CC_DIF_AHB_IF1 |
 			XDMAC_CC_SAM_INCREMENTED_AM |
 			XDMAC_CC_DAM_FIXED_AM |
-			XDMAC_CC_PERID(SPI0_XDMAC_TX_CH_NUM);
+			XDMAC_CC_PERID((uint32_t)DmaTrigSource::spi1tx);
 	xdmac_tx_cfg.mbr_bc = 0;
 	xdmac_tx_cfg.mbr_ds = 0;
 	xdmac_tx_cfg.mbr_sus = 0;
@@ -1595,7 +1603,6 @@ static void spi_tx_dma_setup(const void *buf, uint32_t transferLength) noexcept
 	xdmac_configure_transfer(XDMAC, DmacChanWiFiTx, &xdmac_tx_cfg);
 
 	xdmac_channel_set_descriptor_control(XDMAC, DmacChanWiFiTx, 0);
-	xdmac_channel_disable_interrupt(XDMAC, DmacChanWiFiTx, xdmaint);
 #endif
 
 #if USE_DMAC_MANAGER
@@ -1629,12 +1636,6 @@ static void spi_rx_dma_setup(void *buf, uint32_t transferLength) noexcept
 
 #if USE_XDMAC
 	xdmac_disable_interrupt(XDMAC, DmacChanWiFiRx);
-	const uint32_t xdmaint = (XDMAC_CIE_BIE |
-			XDMAC_CIE_DIE   |
-			XDMAC_CIE_FIE   |
-			XDMAC_CIE_RBIE  |
-			XDMAC_CIE_WBIE  |
-			XDMAC_CIE_ROIE);
 
 	xdmac_rx_cfg.mbr_ubc = transferLength;
 	xdmac_rx_cfg.mbr_da = reinterpret_cast<uint32_t>(buf);
@@ -1648,7 +1649,7 @@ static void spi_rx_dma_setup(void *buf, uint32_t transferLength) noexcept
 			XDMAC_CC_DIF_AHB_IF0 |
 			XDMAC_CC_SAM_FIXED_AM |
 			XDMAC_CC_DAM_INCREMENTED_AM |
-			XDMAC_CC_PERID(SPI0_XDMAC_RX_CH_NUM);
+			XDMAC_CC_PERID((uint32_t)DmaTrigSource::spi1rx);
 	xdmac_rx_cfg.mbr_bc = 0;
 	xdmac_tx_cfg.mbr_ds = 0;
 	xdmac_rx_cfg.mbr_sus = 0;
@@ -1656,7 +1657,6 @@ static void spi_rx_dma_setup(void *buf, uint32_t transferLength) noexcept
 	xdmac_configure_transfer(XDMAC, DmacChanWiFiRx, &xdmac_rx_cfg);
 
 	xdmac_channel_set_descriptor_control(XDMAC, DmacChanWiFiRx, 0);
-	xdmac_channel_disable_interrupt(XDMAC, DmacChanWiFiRx, xdmaint);
 #endif
 
 #if USE_DMAC_MANAGER
@@ -1758,8 +1758,6 @@ void WiFiInterface::SetupSpi() noexcept
 	NVIC_EnableIRQ(ESP_SPI_IRQn);
 }
 
-#endif //end ifndef __LPC17xx__
-
 // Send a command to the ESP and get the result
 int32_t WiFiInterface::SendCommand(NetworkCommand cmd, SocketNumber socketNum, uint8_t flags, uint32_t param32, const void *dataOut, size_t dataOutLength, void* dataIn, size_t dataInLength) noexcept
 {
@@ -1808,7 +1806,7 @@ int32_t WiFiInterface::SendCommand(NetworkCommand cmd, SocketNumber socketNum, u
 	bufferOut->hdr.param32 = param32;
 	bufferOut->hdr.dataLength = (uint16_t)dataOutLength;
 	bufferOut->hdr.dataBufferAvailable = (uint16_t)dataInLength;
-	if (dataOut != nullptr)
+	if (dataOut != nullptr && dataOut != &(bufferOut->data))
 	{
 		memcpy(bufferOut->data, dataOut, dataOutLength);
 	}
@@ -1823,8 +1821,6 @@ int32_t WiFiInterface::SendCommand(NetworkCommand cmd, SocketNumber socketNum, u
 	WiFiSpiSercom->SPI.INTFLAG.reg = 0xFF;		// clear any pending interrupts
 	WiFiSpiSercom->SPI.INTENSET.reg = SERCOM_SPI_INTENSET_TXC;	// enable the end of transmit interrupt
 	EnableSpi();
-#elif defined(__LPC17xx__)
-    spi_slave_dma_setup(dataOutLength, dataInLength);
 #else
     // DMA may have transferred an extra word to the SPI transmit data register. We need to clear this.
 	// The only way I can find to do this is to issue a software reset to the SPI system.
@@ -1845,9 +1841,14 @@ int32_t WiFiInterface::SendCommand(NetworkCommand cmd, SocketNumber socketNum, u
 	digitalWrite(SamTfrReadyPin, true);
 
 	// Wait until the DMA transfer is complete, with timeout
+	// On factory reset, use the startup timeout, as it involves re-formatting the SPIFFS partition.
+	const uint32_t timeout = (cmd == NetworkCommand::networkFactoryReset) ? WiFiStartupMillis :
+		(cmd == NetworkCommand::networkAddSsid || cmd == NetworkCommand::networkDeleteSsid ||
+		 cmd == NetworkCommand::networkConfigureAccessPoint || cmd == NetworkCommand::networkRetrieveSsidData
+			? WiFiSlowResponseTimeoutMillis : WiFiFastResponseTimeoutMillis);
 	do
 	{
-		if (!TaskBase::Take(WiFiResponseTimeoutMillis))
+		if (!TaskBase::Take(timeout))
 		{
 			if (reprap.Debug(moduleNetwork))
 			{
@@ -1970,8 +1971,6 @@ void WiFiInterface::GetNewStatus() noexcept
 	}
 }
 
-#if !defined(__LPC17xx__)
-
 # ifndef ESP_SPI_HANDLER
 #  error ESP_SPI_HANDLER not defined
 # endif
@@ -2006,10 +2005,8 @@ void WiFiInterface::SpiInterrupt() noexcept
 # endif
 
 # if USE_XDMAC
-		spi_tx_dma_disable();
-		xdmac_channel_readwrite_suspend(XDMAC, DmacChanWiFiRx);			// suspend the receive channel
+		spi_tx_dma_disable();											// don't suspend receive, it prevents the FIFO from being emptied in checkRxComplete
 # endif
-
 		DisableSpi();
 		if ((status & SPI_SR_OVRES) != 0)
 		{
@@ -2022,30 +2019,33 @@ void WiFiInterface::SpiInterrupt() noexcept
 #endif
 		if (transferPending)
 		{
-			digitalWrite(SamTfrReadyPin, false);							// stop signalling that we are ready for another transfer
+			digitalWrite(SamTfrReadyPin, false);						// stop signalling that we are ready for another transfer
 			transferPending = false;
 			TaskBase::GiveFromISR(espWaitingTask);
 		}
 	}
 }
 
-#endif //ifndef __LPC17xx__
-
 // Start the ESP
 void WiFiInterface::StartWiFi() noexcept
 {
+#if !WIFI_USES_ESP32
 	digitalWrite(EspResetPin, true);
-
-#if defined(DUET_NG) || defined(DUET3MINI)
 	delayMicroseconds(150);										// ESP8266 datasheet specifies minimum 100us from releasing reset to power up
-	digitalWrite(EspEnablePin, true);
 #endif
 
-#if !SAME5x && !defined(__LPC17xx__)
-	SetPinFunction(APIN_Serial1_TXD, Serial1PeriphMode);				// connect the pins to the UART
-	SetPinFunction(APIN_Serial1_RXD, Serial1PeriphMode);				// connect the pins to the UART
+	digitalWrite(EspEnablePin, true);
+
+#if !SAME5x
+	SetPinFunction(APIN_SerialWiFi_TXD, SerialWiFiPeriphMode);	// connect the pins to the UART
+	SetPinFunction(APIN_SerialWiFi_RXD, SerialWiFiPeriphMode);	// connect the pins to the UART
 #endif
+
+#if WIFI_USES_ESP32
+	SERIAL_WIFI_DEVICE.begin(WiFiBaudRate_ESP32);				// initialise the UART, to receive debug info
+#else
 	SERIAL_WIFI_DEVICE.begin(WiFiBaudRate);						// initialise the UART, to receive debug info
+#endif
 	debugMessageChars = 0;
 	serialRunning = true;
 	debugPrintPending = false;
@@ -2054,15 +2054,15 @@ void WiFiInterface::StartWiFi() noexcept
 // Reset the ESP8266 and leave held in reset
 void WiFiInterface::ResetWiFi() noexcept
 {
+#if !WIFI_USES_ESP32
 	pinMode(EspResetPin, OUTPUT_LOW);							// assert ESP8266 /RESET
-
-#if defined(DUET_NG) || defined(DUET3MINI)
-	pinMode(EspEnablePin, OUTPUT_LOW);
 #endif
 
+	pinMode(EspEnablePin, OUTPUT_LOW);
+
 #if !defined(SAME5x)
-	pinMode(APIN_Serial1_TXD, INPUT_PULLUP);					// just enable pullups on TxD and RxD pins
-	pinMode(APIN_Serial1_RXD, INPUT_PULLUP);
+	pinMode(APIN_SerialWiFi_TXD, INPUT_PULLUP);					// just enable pullups on TxD and RxD pins
+	pinMode(APIN_SerialWiFi_RXD, INPUT_PULLUP);
 #endif
 	currentMode = WiFiState::disabled;
 
@@ -2087,13 +2087,13 @@ void WiFiInterface::ResetWiFiForUpload(bool external) noexcept
 		serialRunning = false;
 	}
 
+#if !WIFI_USES_ESP32
 	// Make sure the ESP8266 is in the reset state
 	pinMode(EspResetPin, OUTPUT_LOW);
+#endif
 
-#if defined(DUET_NG) || defined(DUET3MINI)
 	// Power down the ESP8266
 	pinMode(EspEnablePin, OUTPUT_LOW);
-#endif
 
 	// Set up our transfer request pin (GPIO4) as an output and set it low
 	pinMode(SamTfrReadyPin, OUTPUT_LOW);
@@ -2104,8 +2104,10 @@ void WiFiInterface::ResetWiFiForUpload(bool external) noexcept
 	// GPIO2 also needs to be high to boot up. It's connected to MISO on the SAM, so set the pullup resistor on that pin
 	pinMode(APIN_ESP_SPI_MISO, INPUT_PULLUP);
 
+#if !WIFI_USES_ESP32
 	// Set our CS input (ESP GPIO15) low ready for booting the ESP. This also clears the transfer ready latch.
 	pinMode(SamCsPin, OUTPUT_LOW);
+#endif
 
 	// Make sure it has time to reset - no idea how long it needs, but 50ms should be plenty
 	delay(50);
@@ -2113,26 +2115,26 @@ void WiFiInterface::ResetWiFiForUpload(bool external) noexcept
 	if (external)
 	{
 #if !defined(DUET3MINI)
-		pinMode(APIN_Serial1_TXD, INPUT_PULLUP);					// just enable pullups on TxD and RxD pins
-		pinMode(APIN_Serial1_RXD, INPUT_PULLUP);
+		pinMode(APIN_SerialWiFi_TXD, INPUT_PULLUP);					// just enable pullups on TxD and RxD pins
+		pinMode(APIN_SerialWiFi_RXD, INPUT_PULLUP);
 #endif
 	}
 	else
 	{
-#if !SAME5x && !defined(__LPC17xx__)
-		SetPinFunction(APIN_Serial1_TXD, Serial1PeriphMode);				// connect the pins to the UART
-		SetPinFunction(APIN_Serial1_RXD, Serial1PeriphMode);				// connect the pins to the UART
+#if !SAME5x
+		SetPinFunction(APIN_SerialWiFi_TXD, SerialWiFiPeriphMode);	// connect the pins to the UART
+		SetPinFunction(APIN_SerialWiFi_RXD, SerialWiFiPeriphMode);	// connect the pins to the UART
 #endif
 	}
 
+#if !WIFI_USES_ESP32
 	// Release the reset on the ESP8266
 	digitalWrite(EspResetPin, true);
-
-#if defined(DUET_NG) || defined(DUET3MINI)
-	// Take the ESP8266 out of power down
 	delayMicroseconds(150);											// ESP8266 datasheet specifies minimum 100us from releasing reset to power up
-	digitalWrite(EspEnablePin, true);
 #endif
+
+	// Take the ESP8266 out of power down
+	digitalWrite(EspEnablePin, true);
 }
 
 #endif	// HAS_WIFI_NETWORKING

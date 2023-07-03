@@ -270,6 +270,9 @@ constexpr ObjectModelTableEntry Platform::objectModelTable[] =
 #if HAS_VOLTAGE_MONITOR
 	{ "vIn",				OBJECT_MODEL_FUNC(self, 2),																			ObjectModelEntryFlags::live },
 #endif
+#if HAS_WIFI_NETWORKING
+	{ "wifiFirmwareFileName", OBJECT_MODEL_FUNC_NOSELF(WIFI_FIRMWARE_FILE),														ObjectModelEntryFlags::none },
+#endif
 #if HAS_CPU_TEMP_SENSOR
 	// 1. mcuTemp members
 	{ "current",			OBJECT_MODEL_FUNC(self->GetMcuTemperatures().current, 1),											ObjectModelEntryFlags::live },
@@ -285,7 +288,7 @@ constexpr ObjectModelTableEntry Platform::objectModelTable[] =
 #endif
 
 	// 3. move.axes[] members
-	{ "acceleration",		OBJECT_MODEL_FUNC(InverseConvertAcceleration(self->Acceleration(context.GetLastIndex())), 1),					ObjectModelEntryFlags::none },
+	{ "acceleration",		OBJECT_MODEL_FUNC(InverseConvertAcceleration(self->NormalAcceleration(context.GetLastIndex())), 1),					ObjectModelEntryFlags::none },
 	{ "babystep",			OBJECT_MODEL_FUNC_NOSELF(reprap.GetGCodes().GetTotalBabyStepOffset(context.GetLastIndex()), 3),					ObjectModelEntryFlags::none },
 	{ "current",			OBJECT_MODEL_FUNC((int32_t)(self->GetMotorCurrent(context.GetLastIndex(), 906))),								ObjectModelEntryFlags::none },
 	{ "drivers",			OBJECT_MODEL_FUNC_NOSELF(&axisDriversArrayDescriptor),															ObjectModelEntryFlags::none },
@@ -309,7 +312,7 @@ constexpr ObjectModelTableEntry Platform::objectModelTable[] =
 	{ "workplaceOffsets",	OBJECT_MODEL_FUNC_NOSELF(&workplaceOffsetsArrayDescriptor),														ObjectModelEntryFlags::none },
 
 	// 4. move.extruders[] members
-	{ "acceleration",		OBJECT_MODEL_FUNC(InverseConvertAcceleration(self->Acceleration(ExtruderToLogicalDrive(context.GetLastIndex()))), 1),					ObjectModelEntryFlags::none },
+	{ "acceleration",		OBJECT_MODEL_FUNC(InverseConvertAcceleration(self->NormalAcceleration(ExtruderToLogicalDrive(context.GetLastIndex()))), 1),					ObjectModelEntryFlags::none },
 	{ "current",			OBJECT_MODEL_FUNC((int32_t)(self->GetMotorCurrent(ExtruderToLogicalDrive(context.GetLastIndex()), 906))),								ObjectModelEntryFlags::none },
 	{ "driver",				OBJECT_MODEL_FUNC(self->extruderDrivers[context.GetLastIndex()]),																		ObjectModelEntryFlags::none },
 	{ "factor",				OBJECT_MODEL_FUNC_NOSELF(reprap.GetGCodes().GetExtrusionFactor(context.GetLastIndex()), 3),												ObjectModelEntryFlags::none },
@@ -322,7 +325,7 @@ constexpr ObjectModelTableEntry Platform::objectModelTable[] =
 	{ "percentStstCurrent",	OBJECT_MODEL_FUNC((int32_t)(self->GetMotorCurrent(context.GetLastIndex(), 917))),														ObjectModelEntryFlags::none },
 #endif
 	{ "position",			OBJECT_MODEL_FUNC_NOSELF(ExpressionValue(reprap.GetMove().LiveCoordinate(ExtruderToLogicalDrive(context.GetLastIndex()), reprap.GetCurrentTool()), 1)),	ObjectModelEntryFlags::live },
-	{ "pressureAdvance",	OBJECT_MODEL_FUNC_NOSELF(reprap.GetMove().GetPressureAdvanceClocks(context.GetLastIndex())/StepClockRate, 2),							ObjectModelEntryFlags::none },
+	{ "pressureAdvance",	OBJECT_MODEL_FUNC_NOSELF(reprap.GetMove().GetPressureAdvanceClocks(context.GetLastIndex())/StepClockRate, 3),							ObjectModelEntryFlags::none },
 	{ "rawPosition",		OBJECT_MODEL_FUNC_NOSELF(ExpressionValue(reprap.GetGCodes().GetRawExtruderTotalByDrive(context.GetLastIndex()), 1)), 					ObjectModelEntryFlags::live },
 	{ "speed",				OBJECT_MODEL_FUNC(InverseConvertSpeedToMmPerMin(self->MaxFeedrate(ExtruderToLogicalDrive(context.GetLastIndex()))), 1),					ObjectModelEntryFlags::none },
 	{ "stepsPerMm",			OBJECT_MODEL_FUNC(self->driveStepsPerUnit[ExtruderToLogicalDrive(context.GetLastIndex())], 2),											ObjectModelEntryFlags::none },
@@ -357,7 +360,8 @@ constexpr ObjectModelTableEntry Platform::objectModelTable[] =
 constexpr uint8_t Platform::objectModelTableDescriptor[] =
 {
 	10,																		// number of sections
-	9 + SUPPORT_ACCELEROMETERS + HAS_SBC_INTERFACE + HAS_MASS_STORAGE + HAS_VOLTAGE_MONITOR + HAS_12V_MONITOR + HAS_CPU_TEMP_SENSOR + SUPPORT_CAN_EXPANSION + SUPPORT_12864_LCD + MCU_HAS_UNIQUE_ID,		// section 0: boards[0]
+	9 + SUPPORT_ACCELEROMETERS + HAS_SBC_INTERFACE + HAS_MASS_STORAGE + HAS_VOLTAGE_MONITOR + HAS_12V_MONITOR + HAS_CPU_TEMP_SENSOR
+	  + SUPPORT_CAN_EXPANSION + SUPPORT_12864_LCD + MCU_HAS_UNIQUE_ID + HAS_WIFI_NETWORKING,		// section 0: boards[0]
 #if HAS_CPU_TEMP_SENSOR
 	3,																		// section 1: mcuTemp
 #else
@@ -1047,7 +1051,7 @@ void Platform::Spin() noexcept
 	// Diagnostics test
 	if (debugCode == (unsigned int)DiagnosticTestType::TestSpinLockup)
 	{
-		for (;;) {}
+		delay(30000);
 	}
 
 	// Check whether the TMC drivers need to be initialised.
@@ -1180,7 +1184,7 @@ void Platform::Spin() noexcept
 				}
 
 # if HAS_STALL_DETECT
-				if (stat.HasNewStallSince(oldStatus) && reprap.GetGCodes().IsReallyPrinting())
+				if (stat.HasNewStallSince(oldStatus))
 				{
 					// This stall is new so check whether we need to perform some action in response to the stall
 #  if SUPPORT_REMOTE_COMMANDS
@@ -1748,7 +1752,7 @@ void Platform::Diagnostics(MessageType mtype) noexcept
 #elif HAS_SMART_DRIVERS
 		if (drive < numSmartDrivers)
 		{
-			const StandardDriverStatus status = SmartDrivers::GetStatus(drive);
+			const StandardDriverStatus status = SmartDrivers::GetStatus(drive, false, false);
 			status.AppendText(driverStatus.GetRef(), 0);
 			if (!status.notPresent)
 			{
@@ -3761,6 +3765,46 @@ void Platform::ResetChannel(size_t chan) noexcept
 #endif
 }
 
+#if defined(DUET3_MB6HC)
+
+// This is safe to call before Platform has been created
+/*static*/ BoardType Platform::GetMB6HCBoardType() noexcept
+{
+	// Driver 0 direction has a pulldown resistor on v0.6 and v1.0 boards, but not on v1.01 or v1.02 boards
+	// Driver 1 has a pulldown resistor on v0.1 and v1.0 boards, however we don't support v0.1 and we don't care about the difference between v0.6 and v1.0, so we don't need to read it
+	// Driver 2 has a pulldown resistor on v1.02 only
+	pinMode(DIRECTION_PINS[2], INPUT_PULLUP);
+	pinMode(DIRECTION_PINS[0], INPUT_PULLUP);
+	delayMicroseconds(20);									// give the pullup resistor time to work
+	if (digitalRead(DIRECTION_PINS[2]))
+	{
+		return (digitalRead(DIRECTION_PINS[0])) ? BoardType::Duet3_6HC_v101 : BoardType::Duet3_6HC_v06_100;
+	}
+	else
+	{
+		return BoardType::Duet3_6HC_v102;
+	}
+}
+
+#endif
+
+#if defined(DUET3_MB6XD)
+
+// This is safe to call before Platform has been created
+/*static*/ BoardType Platform::GetMB6XDBoardType() noexcept
+{
+	// Driver 0 direction has a pulldown resistor on v1.0  boards only
+	// Driver 5 direction has a pulldown resistor on 1.01 boards only
+	pinMode(DIRECTION_PINS[0], INPUT_PULLUP);
+	pinMode(DIRECTION_PINS[5], INPUT_PULLUP);
+	delayMicroseconds(20);									// give the pullup resistor time to work
+	return (!digitalRead(DIRECTION_PINS[5])) ? BoardType::Duet3_6XD_v101
+				: (digitalRead(DIRECTION_PINS[0])) ? BoardType::Duet3_6XD_v01
+					: BoardType::Duet3_6XD_v100;
+}
+
+#endif
+
 // Set the board type. This must be called quite early, because for some builds it relies on pins not having been programmed for their intended use yet.
 void Platform::SetBoardType(BoardType bt) noexcept
 {
@@ -3774,33 +3818,27 @@ void Platform::SetBoardType(BoardType bt) noexcept
 					? BoardType::Duet3Mini_WiFi
 						: BoardType::Duet3Mini_Ethernet;
 #elif defined(DUET3_MB6HC)
-		// Driver 0 direction has a pulldown resistor on v0.6 and v1.0 boards, but not on v1.01 or v1.02 boards
-		// Driver 1 has a pulldown resistor on v0.1 and v1.0 boards, however we don't support v0.1 and we don't care about the difference between v0.6 and v1.0, so we don't need to read it
-		// Driver 2 has a pulldown resistor on v1.02 only
-		pinMode(DIRECTION_PINS[2], INPUT_PULLUP);
-		pinMode(DIRECTION_PINS[0], INPUT_PULLUP);
-		delayMicroseconds(20);									// give the pullup resistor time to work
-		if (digitalRead(DIRECTION_PINS[2]))
+		board = GetMB6HCBoardType();
+		if (board == BoardType::Duet3_6HC_v102)
 		{
-			board = (digitalRead(DIRECTION_PINS[0])) ? BoardType::Duet3_6HC_v101 : BoardType::Duet3_6HC_v06_100;
-			powerMonitorVoltageRange = PowerMonitorVoltageRange_v101;
+			powerMonitorVoltageRange = PowerMonitorVoltageRange_v102;
+			DiagPin = DiagPin102;
+			ActLedPin = ActLedPin102;
+			DiagOnPolarity = DiagOnPolarity102;
 		}
 		else
 		{
-			board = BoardType::Duet3_6HC_v102;
-			powerMonitorVoltageRange = PowerMonitorVoltageRange_v102;
+			powerMonitorVoltageRange = PowerMonitorVoltageRange_v101;
+			DiagPin = DiagPinPre102;
+			ActLedPin = ActLedPinPre102;
+			DiagOnPolarity = DiagOnPolarityPre102;
 		}
 		driverPowerOnAdcReading = PowerVoltageToAdcReading(10.0);
 		driverPowerOffAdcReading = PowerVoltageToAdcReading(9.5);
 #elif defined(DUET3_MB6XD)
-		// Driver 0 direction has a pulldown resistor on v1.0  boards, but not on v0.1 boards
-		pinMode(DIRECTION_PINS[0], INPUT_PULLUP);
-		delayMicroseconds(20);									// give the pullup resistor time to work
-		board = (digitalRead(DIRECTION_PINS[0])) ? BoardType::Duet3_6XD_v01 : BoardType::Duet3_6XD_v100;
+		board = GetMB6XDBoardType();
 #elif defined(FMDC_V02) || defined(FMDC_V03)
 		board = BoardType::FMDC;
-#elif defined(SAME70XPLD)
-		board = BoardType::SAME70XPLD_0;
 #elif defined(DUET_NG)
 		// Get ready to test whether the Ethernet module is present, so that we avoid additional delays
 		pinMode(EspResetPin, OUTPUT_LOW);						// reset the WiFi module or the W5500. We assume that this forces the ESP8266 UART output pin to high impedance.
@@ -3878,11 +3916,10 @@ const char *_ecv_array Platform::GetElectronicsString() const noexcept
 	case BoardType::Duet3_6HC_v102:			return "Duet 3 " BOARD_SHORT_NAME " v1.02 or later";
 #elif defined(DUET3_MB6XD)
 	case BoardType::Duet3_6XD_v01:			return "Duet 3 " BOARD_SHORT_NAME " v0.1";
-	case BoardType::Duet3_6XD_v100:			return "Duet 3 " BOARD_SHORT_NAME " v1.0 or later";
+	case BoardType::Duet3_6XD_v100:			return "Duet 3 " BOARD_SHORT_NAME " v1.0";
+	case BoardType::Duet3_6XD_v101:			return "Duet 3 " BOARD_SHORT_NAME " v1.01 or later";
 #elif defined(FMDC_V02) || defined(FMDC_V03)
 	case BoardType::FMDC:					return "Duet 3 " BOARD_SHORT_NAME;
-#elif defined(SAME70XPLD)
-	case BoardType::SAME70XPLD_0:			return "SAME70-XPLD";
 #elif defined(DUET_NG)
 	// This is the string that the Duet 2 ATE uses to identify the board. The version number must be at the end.
 	case BoardType::DuetWiFi_10:			return "Duet WiFi 1.0 or 1.01";
@@ -3918,12 +3955,11 @@ const char *_ecv_array Platform::GetBoardString() const noexcept
 	case BoardType::Duet3_6HC_v101:			return "duet3mb6hc101";
 	case BoardType::Duet3_6HC_v102:			return "duet3mb6hc102";
 #elif defined(DUET3_MB6XD)
-	case BoardType::Duet3_6XD_v01:			return "duet3mb6xd001";					// we have only one version at present
-	case BoardType::Duet3_6XD_v100:			return "duet3mb6xd100";					// we have only one version at present
+	case BoardType::Duet3_6XD_v01:			return "duet3mb6xd001";
+	case BoardType::Duet3_6XD_v100:			return "duet3mb6xd100";
+	case BoardType::Duet3_6XD_v101:			return "duet3mb6xd101";
 #elif defined(FMDC_V02) || defined(FMDC_V03)
 	case BoardType::FMDC:					return "fmdc";
-#elif defined(SAME70XPLD)
-	case BoardType::SAME70XPLD_0:			return "same70xpld";
 #elif defined(DUET_NG)
 	case BoardType::DuetWiFi_10:			return "duetwifi10";
 	case BoardType::DuetWiFi_102:			return "duetwifi102";
@@ -4458,7 +4494,7 @@ GCodeResult Platform::ConfigureStallDetection(GCodeBuffer& gb, const StringRef& 
 				SmartDrivers::AppendStallConfig(drive, reply);
 				buf->cat(reply.c_str());
 				buf->catf(", action on stall: %s",
-							(eventOnStallDrivers.IsBitSet(drive)) ? "run macro"
+							(eventOnStallDrivers.IsBitSet(drive)) ? "raise event"
 								: (logOnStallDrivers.IsBitSet(drive)) ? "log"
 									: "none"
 						  );
@@ -4557,16 +4593,21 @@ GCodeResult Platform::ConfigurePort(GCodeBuffer& gb, const StringRef& reply) THR
 #ifdef DUET3_MB6HC
 	case 64:	// D
 # if HAS_SBC_INTERFACE
-		if (!reprap.UsingSbcInterface())
-# endif
+		if (reprap.UsingSbcInterface())
 		{
-			return MassStorage::ConfigureSdCard(gb, reply);
+			reply.copy("SD card not supported in SBC mode");
+			return GCodeResult::error;
 		}
+# endif
+		return MassStorage::ConfigureSdCard(gb, reply);
 #endif
-		//no break
 
 	default:
+#ifdef DUET3_MB6HC
+		reply.copy("exactly one of FHJPSRD must be given");
+#else
 		reply.copy("exactly one of FHJPSR must be given");
+#endif
 		return GCodeResult::error;
 	}
 }
@@ -4642,6 +4683,20 @@ GCodeResult Platform::GetSetAncillaryPwm(GCodeBuffer& gb, const StringRef& reply
 uint32_t Platform::Random() noexcept
 {
 	return StepTimer::GetTimerTicks() ^ uniqueId.GetHash();
+}
+
+#endif
+
+void Platform::SetDiagLed(bool on) const noexcept
+{
+	digitalWrite(DiagPin, XNor(DiagOnPolarity, on));
+}
+
+#if SUPPORT_MULTICAST_DISCOVERY
+
+void Platform::InvertDiagLed() const noexcept
+{
+	digitalWrite(DiagPin, !digitalRead(DiagPin));
 }
 
 #endif
@@ -5196,7 +5251,7 @@ void Platform::SendDriversStatus(CanMessageBuffer& buf) noexcept
 	msg->SetStandardFields(MaxSmartDrivers);
 	for (size_t driver = 0; driver < MaxSmartDrivers; ++driver)
 	{
-		msg->data[driver] = SmartDrivers::GetStatus(driver).AsU32();
+		msg->data[driver] = SmartDrivers::GetStatus(driver, false, false).AsU32();
 	}
 # else
 	msg->SetStandardFields(NumDirectDrivers);

@@ -327,11 +327,10 @@ bool DDA::InitStandardMove(DDARing& ring, const RawMove &nextMove, bool doMotorM
 	bool extrudersMoving = false;
 	bool forwardExtruding = false;
 	float accelerations[MaxAxesPlusExtruders];
-	const float * const normalAccelerations = reprap.GetPlatform().Accelerations(nextMove.reduceAcceleration);
 
 	for (size_t drive = 0; drive < MaxAxesPlusExtruders; drive++)
 	{
-		accelerations[drive] = normalAccelerations[drive];
+		accelerations[drive] = reprap.GetPlatform().Acceleration(drive, nextMove.reduceAcceleration);
 
 		if (drive < numVisibleAxes)
 		{
@@ -594,7 +593,7 @@ bool DDA::InitLeadscrewMove(DDARing& ring, float feedrate, const float adjustmen
 	tool = nullptr;
 	filePos = prev->filePos;
 	flags.endCoordinatesValid = prev->flags.endCoordinatesValid;
-	acceleration = deceleration = reprap.GetPlatform().Acceleration(Z_AXIS);
+	acceleration = deceleration = reprap.GetPlatform().NormalAcceleration(Z_AXIS);
 
 #if SUPPORT_LASER && SUPPORT_IOBITS
 	if (reprap.GetGCodes().GetMachineType() == MachineType::laser)
@@ -853,6 +852,7 @@ bool DDA::InitFromRemote(const CanMessageMovementLinear& msg) noexcept
 			}
 			else
 			{
+				// No steps to do, so release the DM
 				DriveMovement::Release(pdm);
 			}
 		}
@@ -862,6 +862,14 @@ bool DDA::InitFromRemote(const CanMessageMovementLinear& msg) noexcept
 	// 2. Throw it away if there's no real movement.
 	if (activeDMs == nullptr)
 	{
+		// We may have set up the unshaped segments, in which case we must recycle them
+		for (MoveSegment* seg = unshapedSegments; seg != nullptr; )
+		{
+			MoveSegment* const nextSeg = seg->GetNext();
+			MoveSegment::Release(seg);
+			seg = nextSeg;
+		}
+		unshapedSegments = nullptr;
 		return false;
 	}
 
@@ -1498,7 +1506,7 @@ void DDA::Prepare(SimulationMode simMode) noexcept
 
 					if (   platform.GetDriversBitmap(drive) != 0				// if any of the drives is local
 #if SUPPORT_CAN_EXPANSION
-						|| flags.checkEndstops									// if checking endstops, create a DM even if there are no local drives involved
+						|| flags.checkEndstops									// if checking endstops or a Z probe, create a DM even if there are no local drives involved
 #endif
 					   )
 					{
@@ -2061,12 +2069,12 @@ void DDA::StepDrivers(Platform& p, uint32_t now) noexcept
 		// Trigger the TC so that it generates a step pulse
 		STEP_GATE_TC->TC_CHANNEL[STEP_GATE_TC_CHAN].TC_CCR = TC_CCR_SWTRG;
 		lastStepHighTime = StepTimer::GetTimerTicks();
+	}
 
-		// Calculate the next step times
-		for (DriveMovement *dm2 = activeDMs; dm2 != dm; dm2 = dm2->nextDM)
-		{
-			(void)dm2->CalcNextStepTime(*this);						// calculate next step times
-		}
+	// Calculate the next step times. We must do this even if no local drivers are stepping in case endstops or Z probes are active.
+	for (DriveMovement *dm2 = activeDMs; dm2 != dm; dm2 = dm2->nextDM)
+	{
+		(void)dm2->CalcNextStepTime(*this);							// calculate next step times
 	}
 #else
 # if SUPPORT_SLOW_DRIVERS											// if supporting slow drivers

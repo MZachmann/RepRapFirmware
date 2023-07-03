@@ -128,8 +128,27 @@ void *Tasks::GetNVMBuffer(const uint32_t *_ecv_array null stk) noexcept
 // Application entry point
 [[noreturn]] void AppMain() noexcept
 {
+#if defined(DUET3_MB6HC)													// for MB6HC the Status and Activity pins and polarity depend on the board version
+	const BoardType bt = Platform::GetMB6HCBoardType();
+	const Pin DiagPin = (bt == BoardType::Duet3_6HC_v102) ? DiagPin102 : DiagPinPre102;
+	const Pin ActLedPin = (bt == BoardType::Duet3_6HC_v102) ? ActLedPin102 : ActLedPinPre102;
+	const bool DiagOnPolarity = (bt == BoardType::Duet3_6HC_v102) ? DiagOnPolarity102 : DiagOnPolarityPre102;
+	if (bt == BoardType::Duet3_6HC_v102)
+	{
+		pinMode(UsbPowerSwitchPin, OUTPUT_LOW);								// turn USB power off
+		pinMode(UsbModePin, OUTPUT_LOW);									// USB mode = device/UFP
+	}
+#endif
+#if defined(DUET3_MB6XD)
+	const BoardType bt = Platform::GetMB6XDBoardType();
+	if (bt == BoardType::Duet3_6XD_v101)
+	{
+		pinMode(UsbPowerSwitchPin, OUTPUT_LOW);								// turn USB power off
+		pinMode(UsbModePin, OUTPUT_LOW);									// USB mode = device/UFP
+	}
+#endif
 	pinMode(DiagPin, (DiagOnPolarity) ? OUTPUT_LOW : OUTPUT_HIGH);			// set up status LED for debugging and turn it off
-#if defined(DUET3MINI) || defined(DUET3_MB6XD)
+#if defined(DUET3MINI) || defined(DUET3_MB6HC) || defined(DUET3_MB6XD)
 	pinMode(ActLedPin, (ActOnPolarity) ? OUTPUT_LOW : OUTPUT_HIGH);			// set up activity LED and turn it off
 #endif
 
@@ -309,6 +328,9 @@ void Tasks::Diagnostics(MessageType mtype) noexcept
 #endif
 		p.MessageF(mtype, "Never used RAM %d, free system stack %d words\n", GetNeverUsedRam(), GetHandlerFreeStack()/4);
 
+		//DEBUG
+		//p.MessageF(mtype, "heap top %.08" PRIx32 ", limit %.08" PRIx32 "\n", (uint32_t)heapTop, (uint32_t)heapLimit);
+		//ENDDB
 	}	// end memory stats scope
 
 	const uint32_t timeSinceLastCall = TaskResetRunTimeCounter();

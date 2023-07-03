@@ -116,6 +116,8 @@ bool GCodes::ActOnCode(GCodeBuffer& gb, const StringRef& reply) noexcept
 	catch (const GCodeException& e)
 	{
 		e.GetMessage(reply, &gb);
+		gb.StopTimer();
+		UnlockAll(gb);
 		HandleReply(gb, GCodeResult::error, reply.c_str());
 		return true;
 	}
@@ -2178,13 +2180,13 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 						reply.copy((frac == 1) ? "Reduced accelerations (mm/sec^2): " : "Accelerations (mm/sec^2): ");
 						for (size_t axis = 0; axis < numTotalAxes; ++axis)
 						{
-							reply.catf("%c: %.1f, ", axisLetters[axis], (double)InverseConvertAcceleration(platform.Accelerations(frac == 1)[axis]));
+							reply.catf("%c: %.1f, ", axisLetters[axis], (double)InverseConvertAcceleration(platform.Acceleration(axis, frac == 1)));
 						}
 						reply.cat("E:");
 						char sep = ' ';
 						for (size_t extruder = 0; extruder < numExtruders; extruder++)
 						{
-							reply.catf("%c%.1f", sep, (double)InverseConvertAcceleration(platform.Accelerations(frac == 1)[ExtruderToLogicalDrive(extruder)]));
+							reply.catf("%c%.1f", sep, (double)InverseConvertAcceleration(platform.Acceleration(ExtruderToLogicalDrive(extruder), frac == 1)));
 							sep = ':';
 						}
 					}
@@ -3474,23 +3476,8 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 				break;
 
 			case 570: // Set/report heater monitoring
-				{
-					bool seen = false;
-					if (gb.Seen('S'))
-					{
-						seen = true;
-						heaterFaultTimeout = gb.GetUIValue() * (60 * 1000);
-					}
-					if (gb.Seen('H'))
-					{
-						seen = true;
-						result = reprap.GetHeat().ConfigureHeaterMonitoring(gb.GetUIValue(), gb, reply);
-					}
-					if (!seen)
-					{
-						reply.printf("Print will be terminated if a heater fault is not reset within %" PRIu32 " minutes", heaterFaultTimeout/(60 * 1000));
-					}
-				}
+				gb.MustSee('H');
+				result = reprap.GetHeat().ConfigureHeaterMonitoring(gb.GetUIValue(), gb, reply);
 				break;
 
 			case 571: // Set output on extrude
@@ -3504,12 +3491,7 @@ bool GCodes::HandleMcode(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeEx
 			// case 573 was report heater average PWM but is no longer supported because you can use "echo heat/heaters[N].avgPwm" instead
 
 			case 574: // Set endstop configuration
-				// We may be about to delete endstops, so make sure we are not executing a move that uses them
-				if (!LockMovementAndWaitForStandstill(gb))
-				{
-					return false;
-				}
-				result = platform.GetEndstops().HandleM574(gb, reply, outBuf);
+				result = platform.GetEndstops().HandleM574(gb, reply, outBuf);				// this will lock movement if it is going to make any changes
 				break;
 
 			case 575: // Set communications parameters

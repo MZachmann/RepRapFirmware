@@ -607,8 +607,11 @@ void RepRap::Init() noexcept
 
 		if (rslt == GCodeResult::ok)
 		{
+# if defined(DUET3_MB6HC)
+			network->CreateAdditionalInterface();		// do this now because config.g may refer to it
+# endif
 			// Run the configuration file
-			if (!RunStartupFile(GCodes::CONFIG_FILE) && !RunStartupFile(GCodes::CONFIG_BACKUP_FILE))
+			if (!RunStartupFile(GCodes::CONFIG_FILE, true) && !RunStartupFile(GCodes::CONFIG_BACKUP_FILE, true))
 			{
 				platform->Message(AddWarning(UsbMessage), "no configuration file found\n");
 			}
@@ -648,9 +651,9 @@ void RepRap::Init() noexcept
 		}
 
 		// Run config.g or config.g.bak
-		if (!RunStartupFile(GCodes::CONFIG_FILE))
+		if (!RunStartupFile(GCodes::CONFIG_FILE, true))
 		{
-			RunStartupFile(GCodes::CONFIG_BACKUP_FILE);
+			RunStartupFile(GCodes::CONFIG_BACKUP_FILE, true);
 		}
 
 		// runonce.g is executed by the SBC as soon as processingConfig is set to false.
@@ -662,7 +665,7 @@ void RepRap::Init() noexcept
 		network->Activate();							// need to do this here, as the configuration GCodes may set IP address etc.
 #if HAS_MASS_STORAGE
 		// If we are running from SD card, run the runonce.g file if it exists, then delete it
-		if (RunStartupFile(GCodes::RUNONCE_G))
+		if (RunStartupFile(GCodes::RUNONCE_G, false))
 		{
 			platform->DeleteSysFile(GCodes::RUNONCE_G);
 		}
@@ -671,6 +674,7 @@ void RepRap::Init() noexcept
 	processingConfig = false;
 
 #if HAS_HIGH_SPEED_SD && !SAME5x
+	// Switch to giving up the CPU while waiting for a SD operation to complete
 	hsmci_set_idle_func(hsmciIdle);
 	HSMCI->HSMCI_IDR = 0xFFFFFFFF;						// disable all HSMCI interrupts
 	NVIC_EnableIRQ(HSMCI_IRQn);
@@ -688,9 +692,9 @@ void RepRap::Init() noexcept
 }
 
 // Run a startup file
-bool RepRap::RunStartupFile(const char *filename) noexcept
+bool RepRap::RunStartupFile(const char *filename, bool isMainConfigFile) noexcept
 {
-	bool rslt = gCodes->RunConfigFile(filename);
+	const bool rslt = gCodes->RunConfigFile(filename, isMainConfigFile);
 	if (rslt)
 	{
 		platform->MessageF(UsbMessage, "Executing %s... ", filename);
@@ -1353,12 +1357,36 @@ void RepRap::Tick() noexcept
 				heat->SwitchOffAllLocalFromISR();								// can't call SwitchOffAll because remote heaters can't be turned off from inside a ISR
 				platform->EmergencyDisableDrivers();
 
-				// We now save the stack when we get stuck in a spin loop
-				__asm volatile("mrs r2, psp");
-				register const uint32_t * stackPtr asm ("r2");					// we want the PSP not the MSP
-				SoftwareReset(
-					(heatTaskStuck) ? SoftwareResetReason::heaterWatchdog : SoftwareResetReason::stuckInSpin,
-					stackPtr + 5);												// discard uninteresting registers, keep LR PC PSR
+				// Save the stack of the stuck task when we get stuck in a spin loop
+				const uint32_t *relevantStackPtr;
+				const TaskHandle relevantTask = (heatTaskStuck) ? Heat::GetHeatTask() : Tasks::GetMainTask();
+				if (relevantTask == RTOSIface::GetCurrentTask())
+				{
+					__asm volatile("mrs r2, psp");
+					register const uint32_t * stackPtr asm ("r2");				// we want the PSP not the MSP
+					relevantStackPtr = stackPtr + 5;							// discard uninteresting registers, keep LR PC PSR
+				}
+				else
+				{
+					relevantStackPtr = const_cast<const uint32_t*>(pxTaskGetLastStackTop(relevantTask->GetFreeRTOSHandle()));
+					// All registers were saved on the stack, so to get useful return addresses we need to skip most of them.
+					// See the port.c files in FreeRTOS for the stack layouts
+#if SAME70 || SAM4E || SAME5x
+					// ARM Cortex M7 with double precision floating point, or ARM Cortex M4F
+					if ((relevantStackPtr[8] & 0x10) == 0)						// test EXC_RETURN FP bit
+					{
+						relevantStackPtr += 9 + 16;								// skip r4-r11 and r14 and s16-s31
+					}
+					else
+					{
+						relevantStackPtr += 9;									// skip r4-r11 and r14
+					}
+#else
+					// ARM Cortex M3 or M4 without floating point
+					relevantStackPtr += 8;										// skip r4-r11
+#endif
+				}
+				SoftwareReset((heatTaskStuck) ? SoftwareResetReason::heaterWatchdog : SoftwareResetReason::stuckInSpin, relevantStackPtr);
 			}
 		}
 	}
@@ -1896,7 +1924,7 @@ OutputBuffer *RepRap::GetConfigResponse() noexcept
 
 	// Accelerations
 	response->cat(',');
-	AppendFloatArray(response, "accelerations", MaxAxesPlusExtruders, [this](size_t drive) noexcept { return InverseConvertAcceleration(platform->Acceleration(drive)); }, 2);
+	AppendFloatArray(response, "accelerations", MaxAxesPlusExtruders, [this](size_t drive) noexcept { return InverseConvertAcceleration(platform->NormalAcceleration(drive)); }, 2);
 
 	// Motor currents
 	response->cat(',');
@@ -2884,7 +2912,7 @@ bool RepRap::WriteToolParameters(FileStore *f, const bool forceWriteOffsets) noe
 				written = true;
 			}
 			scratchString.catf("G10 P%d", t->Number());
-			for (size_t axis = 0; axis < MaxAxes; ++axis)
+			for (size_t axis = 0; axis < gCodes->GetVisibleAxes(); ++axis)
 			{
 				if (forceWriteOffsets || axesProbed.IsBitSet(axis))
 				{
@@ -2994,7 +3022,7 @@ void RepRap::PrepareToLoadIap() noexcept
 
 	// The machine will be unresponsive for a few seconds, don't risk damaging the heaters.
 	// This also shuts down tasks and interrupts that might make use of the RAM that we are about to load the IAP binary into.
-	EmergencyStop();						// this also stops Platform::Tick being called, which is necessary because it access Z probe object in RAM used by IAP
+	EmergencyStop();						// this also stops Platform::Tick being called, which is necessary because it may access a Z probe object in RAM which will be overwritten by the IAP
 	network->Exit();						// kill the network task to stop it overwriting RAM that we use to hold the IAP
 #if HAS_SMART_DRIVERS
 	SmartDrivers::Exit();					// stop the drivers being polled via SPI or UART because it may use data in the last 64Kb of RAM
@@ -3020,19 +3048,20 @@ void RepRap::PrepareToLoadIap() noexcept
 	ARM_MPU_Disable();						// make sure we can execute from RAM
 #endif
 
-#if 0
+#if 0	// this code doesn't work, it causes a watchdog reset
 	// Debug
-	memset(reinterpret_cast<char *>(IAP_IMAGE_START), 0x7E, 60 * 1024);
+	memset(reinterpret_cast<char *>(IAP_IMAGE_START), 0x7E, 20 * 1024);
 	delay(2000);
-	for (char* p = reinterpret_cast<char *>(IAP_IMAGE_START); p < reinterpret_cast<char *>(IAP_IMAGE_START + (60 * 1024)); ++p)
+	for (char* p = reinterpret_cast<char *>(IAP_IMAGE_START); p < reinterpret_cast<char *>(IAP_IMAGE_START + (20 * 1024)); ++p)
 	{
 		if (*p != 0x7E)
 		{
-			debugPrintf("At %08" PRIx32 ": %02x\n", reinterpret_cast<uint32_t>(p), *p);
+			SERIAL_AUX_DEVICE.printf("At %08" PRIx32 ": %02x\n", reinterpret_cast<uint32_t>(p), *p);
 		}
 	}
-	debugPrintf("Scan complete\n");
-	#endif
+	SERIAL_AUX_DEVICE.printf("Scan complete\n");
+	delay(1000);							// give it time to send the message
+#endif
 }
 
 void RepRap::StartIap(const char *filename) noexcept

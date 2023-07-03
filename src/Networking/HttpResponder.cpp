@@ -529,11 +529,14 @@ bool HttpResponder::GetJsonResponse(const char *_ecv_array request, OutputBuffer
 		const char *command = GetKeyValue("gcode");
 		NetworkGCodeInput * const httpInput = reprap.GetGCodes().GetHTTPInput();
 		// If the command is empty, just report the buffer space. This allows rr_gcode to be used to poll the buffer space without using it up.
-		if (command != nullptr && command[0] != 0)
+		if (command != nullptr && command[0] != 0 && !httpInput->Put(HttpMessage, command))
 		{
-			httpInput->Put(HttpMessage, command);
+			response->copy("{\"err\":1}");								// the command string wasn't accepted, it's probably too long
 		}
-		response->printf("{\"buff\":%u}", httpInput->BufferSpaceLeft());
+		else
+		{
+			response->printf("{\"buff\":%u}", httpInput->BufferSpaceLeft());
+		}
 	}
 #if HAS_MASS_STORAGE
 	else if (StringEqualsIgnoreCase(request, "upload"))
@@ -1112,6 +1115,18 @@ void HttpResponder::ProcessRequest() noexcept
 	{
 		RejectMessage("too few command words");
 		return;
+	}
+
+	// Check the case of absolute URIs in case the request came through a proxy
+	if (StringStartsWith(commandWords[1], "http://"))
+	{
+		const char *relativePath = strchr(commandWords[1] + 7, '/');
+		if (relativePath == nullptr)
+		{
+			RejectMessage("invalid absolute URI");
+			return;
+		}
+		commandWords[1] = relativePath;
 	}
 
 	// Reserve an output buffer before we process the request, or we won't be able to reply

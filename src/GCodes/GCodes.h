@@ -124,7 +124,7 @@ public:
 	FilePosition GetFilePosition(bool allowNoFilePos = false) const noexcept;	// Return the current position of the file being printed in bytes. May return noFilePosition if allowNoFilePos is true
 	void Diagnostics(MessageType mtype) noexcept;								// Send helpful information out
 
-	bool RunConfigFile(const char* fileName) noexcept;							// Start running the config file
+	bool RunConfigFile(const char* fileName, bool isMainConfigFile) noexcept;	// Start running a configuration file
 	bool IsTriggerBusy() const noexcept;										// Return true if the trigger G-code buffer is busy running config.g or a trigger file
 
 	bool IsAxisHomed(unsigned int axis) const noexcept							// Has the axis been homed?
@@ -687,9 +687,6 @@ private:
 	// Laser
 	float laserMaxPower;
 	bool laserPowerSticky;						// true if G1 S parameters are remembered across G1 commands
-
-	// Heater fault handler
-	uint32_t heaterFaultTimeout;				// how long we wait for the user to fix it before turning everything off
 
 	// Object cancellation
 	ObjectTracker buildObjects;

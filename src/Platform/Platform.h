@@ -122,10 +122,9 @@ enum class BoardType : uint8_t
 #elif defined(DUET3_MB6XD)
 	Duet3_6XD_v01 = 1,
 	Duet3_6XD_v100 = 2,
+	Duet3_6XD_v101 = 3,
 #elif defined(FMDC_V02) || defined(FMDC_V03)
 	FMDC,
-#elif defined(SAME70XPLD)
-	SAME70XPLD_0 = 1
 #elif defined(DUET_NG)
 	DuetWiFi_10 = 1,
 	DuetWiFi_102 = 2,
@@ -474,8 +473,8 @@ public:
 	const float *_ecv_array GetDriveStepsPerUnit() const noexcept
 		{ return driveStepsPerUnit; }
 	void SetDriveStepsPerUnit(size_t axisOrExtruder, float value, uint32_t requestedMicrostepping) noexcept;
-	float Acceleration(size_t axisOrExtruder) const noexcept;
-	const float *_ecv_array Accelerations(bool useReduced) const noexcept;
+	float NormalAcceleration(size_t axisOrExtruder) const noexcept;
+	float Acceleration(size_t axisOrExtruder, bool reduced) const noexcept;
 	void SetAcceleration(size_t axisOrExtruder, float value, bool reduced) noexcept;
 	float MaxFeedrate(size_t axisOrExtruder) const noexcept;
 	const float *_ecv_array MaxFeedrates() const noexcept { return maxFeedrates; }
@@ -672,7 +671,20 @@ public:
 #endif
 
 #if SUPPORT_CAN_EXPANSION
-	void OnProcessingCanMessage() noexcept;								// called when we start processing any CAN message except for regular messages e.g. time sync
+	void OnProcessingCanMessage() noexcept;										// called when we start processing any CAN message except for regular messages e.g. time sync
+#endif
+
+#if defined(DUET3_MB6HC)
+	static BoardType GetMB6HCBoardType() noexcept;								// this is safe to call before Platform has been created
+#endif
+#if defined(DUET3_MB6XD)
+	static BoardType GetMB6XDBoardType() noexcept;								// this is safe to call before Platform has been created
+#endif
+
+	void SetDiagLed(bool on) const noexcept;
+
+#if SUPPORT_MULTICAST_DISCOVERY
+	void InvertDiagLed() const noexcept;
 #endif
 
 protected:
@@ -894,6 +906,9 @@ private:
 	float powerMonitorVoltageRange;
 	uint16_t driverPowerOnAdcReading;
 	uint16_t driverPowerOffAdcReading;
+	Pin DiagPin;
+	Pin ActLedPin;
+	bool DiagOnPolarity;
 #endif
 
 	bool autoSaveEnabled;
@@ -973,14 +988,14 @@ inline float Platform::DriveStepsPerUnit(size_t drive) const noexcept
 	return driveStepsPerUnit[drive];
 }
 
-inline float Platform::Acceleration(size_t drive) const noexcept
+inline float Platform::NormalAcceleration(size_t drive) const noexcept
 {
 	return normalAccelerations[drive];
 }
 
-inline const float *_ecv_array Platform::Accelerations(bool useReduced) const noexcept
+inline float Platform::Acceleration(size_t drive, bool useReduced) const noexcept
 {
-	return (useReduced) ? reducedAccelerations : normalAccelerations;
+	return (useReduced) ? min<float>(reducedAccelerations[drive], normalAccelerations[drive]) : normalAccelerations[drive];
 }
 
 inline void Platform::SetAcceleration(size_t drive, float value, bool reduced) noexcept

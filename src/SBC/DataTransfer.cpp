@@ -21,7 +21,7 @@
 # define USE_XDMAC			0		// use XDMA controller
 # define USE_DMAC_MANAGER	0		// use SAME5x DmacManager module
 
-#elif defined(DUET3) || defined(SAME70XPLD)
+#elif defined(DUET3)
 
 # define USE_DMAC			0		// use general DMA controller
 # define USE_XDMAC			1		// use XDMA controller
@@ -55,6 +55,10 @@ constexpr IRQn SBC_SPI_IRQn = SbcSpiSercomIRQn;
 
 #if SAME70
 # include <spi/spi.h>
+#endif
+
+#if defined(DUET3_MB6HC) && HAS_WIFI_NETWORKING
+extern void ESP_SPI_HANDLER() noexcept;
 #endif
 
 #include <RepRapFirmware.h>
@@ -356,6 +360,13 @@ extern "C" void SBC_SPI_HANDLER() noexcept
 		TaskBase::GiveFromISR(sbcTaskHandle);
 	}
 #else
+# if defined(DUET3_MB6HC) && HAS_WIFI_NETWORKING
+	if (!reprap.UsingSbcInterface())
+	{
+		ESP_SPI_HANDLER();
+		return;
+	}
+# endif
 	const uint32_t status = SBC_SPI->SPI_SR;							// read status and clear interrupt
 	SBC_SPI->SPI_IDR = SPI_IER_NSSR;									// disable the interrupt
 	if ((status & SPI_SR_NSSR) != 0)
