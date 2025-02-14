@@ -225,6 +225,7 @@ constexpr ObjectModelTableEntry Move::objectModelTable[] =
 	{ "liveGrid",				OBJECT_MODEL_FUNC_IF(self->usingMesh, (const GridDefinition *)&self->GetGrid()),				ObjectModelEntryFlags::none },
 	{ "meshDeviation",			OBJECT_MODEL_FUNC_IF(self->usingMesh, self, 7),													ObjectModelEntryFlags::none },
 	{ "probeGrid",				OBJECT_MODEL_FUNC_NOSELF((const GridDefinition *)&reprap.GetGCodes().GetDefaultGrid()),			ObjectModelEntryFlags::none },
+	{ "screwMap",                OBJECT_MODEL_FUNC(self->GetScrewMap().IsEnabled()),                                        ObjectModelEntryFlags::none },
 	{ "skew",					OBJECT_MODEL_FUNC(self, 8),																		ObjectModelEntryFlags::none },
 	{ "type",					OBJECT_MODEL_FUNC(self->GetCompensationTypeString()),											ObjectModelEntryFlags::none },
 
@@ -1030,6 +1031,7 @@ void Move::Diagnostics(MessageType mtype) noexcept
 						, (double)minExtrusionPending, (double)maxExtrusionPending
 #endif
 		);
+	p.MessageF(mtype, "Screw Map: %s", GetScrewMap().GetEnabledString()); 
 	longestGcodeWaitInterval = 0;
 	numHiccups = 0;
 #if 1	//debug
@@ -1191,10 +1193,12 @@ void Move::AxisAndBedTransform(float xyzPoint[MaxAxes], const Tool *tool, bool u
 	{
 		BedTransform(xyzPoint, tool);
 	}
+	screwMap.ScrewMapTransform(xyzPoint);
 }
 
 void Move::InverseAxisAndBedTransform(float xyzPoint[MaxAxes], const Tool *tool) const noexcept
 {
+	screwMap.ScrewMapInverseTransform(xyzPoint);
 	InverseBedTransform(xyzPoint, tool);
 	InverseAxisTransform(xyzPoint, tool);
 }

@@ -17,6 +17,7 @@
 #include "BedProbing/RandomProbePointSet.h"
 #include "BedProbing/Grid.h"
 #include "Kinematics/Kinematics.h"
+#include "Kinematics/ScrewMap.h"
 #include "MoveSegment.h"
 #include "DriveMovement.h"
 #include "StepTimer.h"
