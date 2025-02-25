@@ -17,6 +17,7 @@
 #include "BedProbing/RandomProbePointSet.h"
 #include "BedProbing/Grid.h"
 #include "Kinematics/Kinematics.h"
+#include "Kinematics/ScrewMap.h"
 #include "MoveSegment.h"
 #include "DriveMovement.h"
 #include "StepTimer.h"
@@ -399,6 +400,8 @@ public:
 	GCodeResult StartHeightFollowing(GCodeBuffer& gb, const StringRef& reply) THROWS(GCodeException);		// Start/stop height following
 #endif
 
+	ScrewMap& GetScrewMap() noexcept { return screwMap; };
+	const ScrewMap& GetScrewMap() const noexcept { return screwMap; };
 	const RandomProbePointSet& GetProbePoints() const noexcept { return probePoints; }		// Return the probe point set constructed from G30 commands
 
 	DDARing& GetMainDDARing() noexcept { return rings[0]; }
@@ -659,6 +662,7 @@ private:
 	bool compensateXY;									// If true then we compensate for XY skew by adjusting the Y coordinate; else we adjust the X coordinate
 
 	HeightMap heightMap;    							// The grid definition in use and height map for G29 bed probing
+    ScrewMap screwMap;                                  // lead screw mapping tables
 	RandomProbePointSet probePoints;					// G30 bed probe points
 	float taperHeight;									// Height over which we taper
 	float recipTaperHeight;								// Reciprocal of the taper height

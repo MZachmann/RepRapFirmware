@@ -22,10 +22,12 @@ void Move::AxisAndBedTransform(float xyzPoint[MaxAxes], const Tool *_ecv_null to
 	{
 		BedTransform(xyzPoint, tool);
 	}
+	screwMap.ScrewMapTransform(xyzPoint);
 }
 
 void Move::InverseAxisAndBedTransform(float xyzPoint[MaxAxes], const Tool *_ecv_null tool) const noexcept
 {
+	screwMap.ScrewMapInverseTransform(xyzPoint);
 	InverseBedTransform(xyzPoint, tool);
 	InverseAxisTransform(xyzPoint, tool);
 }

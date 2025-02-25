@@ -213,6 +213,7 @@ constexpr ObjectModelTableEntry Move::objectModelTable[] =
 	{ "liveGrid",				OBJECT_MODEL_FUNC_IF(self->usingMesh, (const GridDefinition *)&self->GetGrid()),				ObjectModelEntryFlags::none },
 	{ "meshDeviation",			OBJECT_MODEL_FUNC_IF(self->usingMesh, self, 7),													ObjectModelEntryFlags::none },
 	{ "probeGrid",				OBJECT_MODEL_FUNC_NOSELF((const GridDefinition *)&reprap.GetGCodes().GetDefaultGrid()),			ObjectModelEntryFlags::none },
+	{ "screwMap",               OBJECT_MODEL_FUNC(self->GetScrewMap().IsEnabled()),                                        ObjectModelEntryFlags::none },
 	{ "skew",					OBJECT_MODEL_FUNC(self, 8),																		ObjectModelEntryFlags::none },
 	{ "type",					OBJECT_MODEL_FUNC(self->GetCompensationTypeString()),											ObjectModelEntryFlags::none },
 
@@ -306,7 +307,7 @@ constexpr uint8_t Move::objectModelTableDescriptor[] =
 	3,
 	2,
 	2,
-	6 + (int)(HAS_MASS_STORAGE || HAS_SBC_INTERFACE),
+	7 + (int)(HAS_MASS_STORAGE || HAS_SBC_INTERFACE),
 	2,
 	4,
 #ifdef DUET_NG	// Duet WiFi/Ethernet doesn't have settable standstill current
